@@ -136,9 +136,10 @@ functionality.
 
 /* Standard includes. */
 #include <stdint.h>
+#include <stdio.h>
 
 /* Kernel includes. */
-#include "stm32f4xx.h"
+#include "stm32f4xx_conf.h"
 #include "../FreeRTOS_Source/include/FreeRTOS.h"
 #include "../FreeRTOS_Source/include/queue.h"
 #include "../FreeRTOS_Source/include/semphr.h"
@@ -213,47 +214,97 @@ void Delay(__IO uint32_t nCount);
 
 /*-----------------------------------------------------------*/
 
-int main()
-{
+// TODO comments
 
-//Enable the GPIOD Clock
-  RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOD,ENABLE);
+void initGPIO() {
+	// Init GPIOA (for ADC input)
+	RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOA, ENABLE);
+	GPIO_InitTypeDef GPIO_InitStructA;
+    GPIO_InitStructA.GPIO_Pin = GPIO_Pin_1;
+    GPIO_InitStructA.GPIO_Mode = GPIO_Mode_AN;
+    GPIO_InitStructA.GPIO_PuPd = GPIO_PuPd_NOPULL;
+    GPIO_Init(GPIOA, &GPIO_InitStructA);
 
-  uint16_t myclock = GPIO_Pin_0;
+    // Init GPIOD (for clocks and clear)
+	RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOD, ENABLE);
+	GPIO_InitTypeDef GPIO_InitStructD;
+	GPIO_InitStructD.GPIO_Pin = GPIO_Pin_0 | GPIO_Pin_1 | GPIO_Pin_2 | GPIO_Pin_3;
+	GPIO_InitStructD.GPIO_Mode = GPIO_Mode_OUT;
+	GPIO_InitStructD.GPIO_PuPd = GPIO_PuPd_UP;
+	GPIO_InitStructD.GPIO_OType = GPIO_OType_PP;
+	GPIO_InitStructD.GPIO_Speed = GPIO_Speed_50MHz;
+	GPIO_Init(GPIOD, &GPIO_InitStructD);
 
-  // GPIOD Configuration
-    GPIO_InitTypeDef GPIO_InitStruct;
+    // Init GPIOE (for A and B signals)
+	RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOE, ENABLE);
+	GPIO_InitTypeDef GPIO_InitStructE;
+	GPIO_InitStructE.GPIO_Pin = GPIO_Pin_0 | GPIO_Pin_1;
+	GPIO_InitStructE.GPIO_Mode = GPIO_Mode_OUT;
+	GPIO_InitStructE.GPIO_PuPd = GPIO_PuPd_UP;
+	GPIO_InitStructE.GPIO_OType = GPIO_OType_PP;
+	GPIO_InitStructE.GPIO_Speed = GPIO_Speed_50MHz;
+	GPIO_Init(GPIOE, &GPIO_InitStructE);
+}
 
-    GPIO_InitStruct.GPIO_Pin = (myclock | GPIO_Pin_1 | GPIO_Pin_2 | GPIO_Pin_3);
-    GPIO_InitStruct.GPIO_Mode = GPIO_Mode_OUT;
-    GPIO_InitStruct.GPIO_Speed = GPIO_Speed_50MHz;
-    GPIO_InitStruct.GPIO_OType = GPIO_OType_PP;
-    GPIO_InitStruct.GPIO_PuPd = GPIO_PuPd_UP;
+void initADC() {
+	RCC_APB2PeriphClockCmd(RCC_APB2Periph_ADC1, ENABLE);
+	ADC_DeInit();
+	ADC_InitTypeDef ADC_InitStruct;
+	ADC_StructInit(&ADC_InitStruct);
+	/* Initialize the ADC_ContinuousConvMode member */
+	ADC_InitStruct.ADC_ContinuousConvMode = ENABLE;
+	ADC_Init(ADC1, &ADC_InitStruct);
+    ADC_Cmd(ADC1, ENABLE);
+    ADC_RegularChannelConfig(ADC1, ADC_Channel_1, 1, ADC_SampleTime_144Cycles);
+}
 
-    GPIO_Init(GPIOE, &GPIO_InitStruct);
 
-    GPIO_ResetBits(GPIOE, (GPIO_Pin_1 | GPIO_Pin_2 | GPIO_Pin_3));
-
-	Delay(0x3FFFFF);
-
-//    GPIO_SetBits(GPIOE, GPIO_Pin_1);
-//    GPIO_SetBits(GPIOE, GPIO_Pin_2);
-//    GPIO_SetBits(GPIOE, GPIO_Pin_3);
-
-    for (;;) {
-    	GPIO_SetBits(GPIOE, myclock);
-
-    	Delay(0x0FFFFF);
-
-        GPIO_ResetBits(GPIOE, myclock);
-
-    	Delay(0x0FFFFF);
-
+uint16_t readADC() {
+	ADC_SoftwareStartConv(ADC1);
+    while(ADC_GetFlagStatus(ADC1, ADC_FLAG_EOC)) {
+        return ADC_GetConversionValue(ADC1);
     }
+}
 
+int main() {
+	// Initialize everything
+	initADC();
+	initGPIO();
+
+	while(1) {
+		uint16_t signal_A = GPIO_Pin_0;
+		uint16_t signal_B = GPIO_Pin_1;
+		uint16_t clock1 = GPIO_Pin_0;
+
+		GPIO_ResetBits(GPIOD, GPIO_Pin_3);
+		GPIO_SetBits(GPIOE, signal_B);
+		GPIO_SetBits(GPIOD, GPIO_Pin_3);
+
+		int i = 0;
+		GPIO_SetBits(GPIOE, signal_A);
+
+		for(i = 0; i < 8; i++) {
+			uint16_t conversionValue = readADC();
+			//TODO delete
+			printf("Conversion value: %u\n", conversionValue);
+
+
+
+			GPIO_SetBits(GPIOD, clock1);
+			Delay(0xFFFFFF);
+
+			GPIO_ResetBits(GPIOD, clock1);
+			Delay(0xFFFFFF);
+			GPIO_ResetBits(GPIOE, signal_A);
+		}
+
+	}
+	// should not return
 
     return 0;
 }
+
+
 
 /**
   * @brief  Delay Function.
