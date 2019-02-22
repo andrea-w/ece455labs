@@ -1,0 +1,74 @@
+void trafficFlowAdjustmentTask ( ) {
+	create software timer
+	start software timer
+	for ( ;; )
+		// place this task in blocked state until it is time to run again
+		vTaskDelayUntil()
+		
+		potentiometer_value <-- readADC()
+		traffic_load <-- normalized potentiometer_value
+		
+		// send traffic_load to queue so that other tasks can read the value
+		xQueueSend()
+}
+
+void trafficCreatorTask ( ) {
+	create software timer
+	start software timer
+	
+	for ( ;; ) {
+		// place this task in blocked state until it is time to run again
+		vTaskDelayUntil()
+		
+		read traffic_load from traffic load queue
+		rand_num <-- generate random number
+		// compare rand_num to traffic_load
+		if rand_num <= traffic_load {
+			// create new car
+			// send new car to traffic queue
+			xQueueSend()
+		}	
+	}
+}
+
+void trafficLightTask ( ) {
+	create software timer
+	start software timer
+	
+	for ( ;; ) {
+		// place this task in blocked state until timer expires
+		vTaskDelayUntil()
+		
+		read traffic_load value from traffic load queue
+		set light cycle times based on traffic load queue
+		change lights based on cycle times
+		// put light status (colour) on traffic light status queue
+		xQueueSend()
+	}
+}
+
+void trafficDisplayTask () {
+	create software timer
+	start software timer
+	
+	for ( ;; ) {
+		// place this task in blocked state until timer expires
+		vTaskDelayUntil()
+		
+		// read traffic light status queue
+		// read traffic queue
+		
+		moveCar(bool traffic_queue, bool traffic_light_status)
+	}
+}
+
+// middleware
+void moveCar (bool newCar, bool yellow_or_red_light) {
+	if (newCar) {
+		set a_1 on
+	}
+	if (yellow_or_red_light) {
+		set a_2 off
+	}
+}
+
