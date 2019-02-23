@@ -137,6 +137,8 @@ functionality.
 /* Standard includes. */
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
 
 /* Kernel includes. */
 #include "stm32f4xx_conf.h"
@@ -146,73 +148,53 @@ functionality.
 #include "../FreeRTOS_Source/include/task.h"
 #include "../FreeRTOS_Source/include/timers.h"
 
-/* Priorities at which the tasks are created.  The event semaphore task is
-given the maximum priority of ( configMAX_PRIORITIES - 1 ) to ensure it runs as
-soon as the semaphore is given. */
-#define mainQUEUE_RECEIVE_TASK_PRIORITY		( tskIDLE_PRIORITY + 2 )
-#define	mainQUEUE_SEND_TASK_PRIORITY		( tskIDLE_PRIORITY + 1 )
-#define mainEVENT_SEMAPHORE_TASK_PRIORITY	( configMAX_PRIORITIES - 1 )
 
+/*----------------------------- DEFINITIONS ------------------------------*/
 /* The rate at which data is sent to the queue, specified in milliseconds, and
 converted to ticks using the portTICK_RATE_MS constant. */
 #define mainQUEUE_SEND_PERIOD_MS			( 200 / portTICK_RATE_MS )
 
 /* The period of the example software timer, specified in milliseconds, and
 converted to ticks using the portTICK_RATE_MS constant. */
-#define mainSOFTWARE_TIMER_PERIOD_MS		( 1000 / portTICK_RATE_MS )
+#define mainCLOCK_PERIOD_MS		( 1000 / portTICK_RATE_MS )
 
-/* The number of items the queue can hold.  This is 1 as the receive task
-will remove items as they are added, meaning the send task should always find
-the queue empty. */
-#define mainQUEUE_LENGTH					( 1 )
+/* The number of items the queue can hold. */
+#define QUEUE_LENGTH					( 1 )
 
-/*-----------------------------------------------------------*/
+/*------------------------------ GLOBAL VARIABLES -----------------------------*/
 
-/*
- * TODO: Implement this function for any hardware specific clock configuration
- * that was not already performed before main() was called.
- */
-static void prvSetupHardware( void );
-
-/*
- * The queue send and receive tasks as described in the comments at the top of
- * this file.
- */
-static void prvQueueReceiveTask( void *pvParameters );
-static void prvQueueSendTask( void *pvParameters );
-
-/*
- * The callback function assigned to the example software timer as described at
- * the top of this file.
- */
-static void vExampleTimerCallback( xTimerHandle xTimer );
-
-/*
- * The event semaphore task as described at the top of this file.
- */
-static void prvEventSemaphoreTask( void *pvParameters );
-
-/*-----------------------------------------------------------*/
-
-/* The queue used by the queue send and queue receive tasks. */
-static xQueueHandle xQueue = NULL;
+/* Queues used to communicate between tasks */
+static xQueueHandle xTrafficLoadForCreatorQueue = NULL;
+static xQueueHandle xTrafficLoadForLightQueue = NULL;
+static xQueueHandle xTrafficQueue = NULL;
+static xQueueHandle xTrafficLightStatusQueue = NULL;
 
 /* The semaphore (in this case binary) that is used by the FreeRTOS tick hook
  * function and the event semaphore task.
  */
 static xSemaphoreHandle xEventSemaphore = NULL;
 
-/* The counters used by the various examples.  The usage is described in the
- * comments at the top of this file.
- */
-static volatile uint32_t ulCountOfTimerCallbackExecutions = 0;
-static volatile uint32_t ulCountOfItemsReceivedOnQueue = 0;
-static volatile uint32_t ulCountOfReceivedSemaphores = 0;
+// GPIOE
+uint16_t new_car_pin = GPIO_Pin_0;
+uint16_t on_always = GPIO_Pin_1;
+uint16_t intersection_car_pin = GPIO_Pin_2;
+uint16_t red = GPIO_Pin_3;
+uint16_t yellow = GPIO_Pin_4;
+uint16_t green = GPIO_Pin_5;
 
-void Delay(__IO uint32_t nCount);
+// GPIOC
+uint16_t car_before_intersection_pin = GPIO_Pin_0;
 
+// GPIOD
+uint16_t clock_pin = GPIO_Pin_0;
+uint16_t clear = GPIO_Pin_2;
 
-/*-----------------------------------------------------------*/
+// GPIOA
+uint16_t adc_pin = GPIO_Pin_1;
+
+uint16_t clock_on = 0;
+
+/*----------------------------- INITIALIZATION FUNCTIONS ------------------------------*/
 
 // TODO comments
 
@@ -220,30 +202,46 @@ void initGPIO() {
 	// Init GPIOA (for ADC input)
 	RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOA, ENABLE);
 	GPIO_InitTypeDef GPIO_InitStructA;
-    GPIO_InitStructA.GPIO_Pin = GPIO_Pin_1;
+    GPIO_InitStructA.GPIO_Pin = adc_pin;
     GPIO_InitStructA.GPIO_Mode = GPIO_Mode_AN;
     GPIO_InitStructA.GPIO_PuPd = GPIO_PuPd_NOPULL;
     GPIO_Init(GPIOA, &GPIO_InitStructA);
 
+    // Init GPIOC (for input car_before_intersection)
+	RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOC, ENABLE);
+	GPIO_InitTypeDef GPIO_InitStructC;
+    GPIO_InitStructC.GPIO_Pin = car_before_intersection_pin;
+    GPIO_InitStructC.GPIO_Mode = GPIO_Mode_IN;
+    GPIO_InitStructC.GPIO_PuPd = GPIO_PuPd_UP;
+	GPIO_InitStructC.GPIO_OType = GPIO_OType_PP;
+	GPIO_InitStructC.GPIO_Speed = GPIO_Speed_50MHz;
+    GPIO_Init(GPIOC, &GPIO_InitStructC);
+
     // Init GPIOD (for clocks and clear)
 	RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOD, ENABLE);
 	GPIO_InitTypeDef GPIO_InitStructD;
-	GPIO_InitStructD.GPIO_Pin = GPIO_Pin_0 | GPIO_Pin_1 | GPIO_Pin_2 | GPIO_Pin_3;
+	GPIO_InitStructD.GPIO_Pin = clock_pin | clear;
 	GPIO_InitStructD.GPIO_Mode = GPIO_Mode_OUT;
 	GPIO_InitStructD.GPIO_PuPd = GPIO_PuPd_UP;
 	GPIO_InitStructD.GPIO_OType = GPIO_OType_PP;
 	GPIO_InitStructD.GPIO_Speed = GPIO_Speed_50MHz;
 	GPIO_Init(GPIOD, &GPIO_InitStructD);
 
+	// Set clear bit to 1
+	GPIO_SetBits(GPIOD, clear);
+
     // Init GPIOE (for A and B signals)
 	RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOE, ENABLE);
 	GPIO_InitTypeDef GPIO_InitStructE;
-	GPIO_InitStructE.GPIO_Pin = GPIO_Pin_0 | GPIO_Pin_1;
+	GPIO_InitStructE.GPIO_Pin = new_car_pin | on_always | intersection_car_pin | red | yellow | green;
 	GPIO_InitStructE.GPIO_Mode = GPIO_Mode_OUT;
 	GPIO_InitStructE.GPIO_PuPd = GPIO_PuPd_UP;
 	GPIO_InitStructE.GPIO_OType = GPIO_OType_PP;
 	GPIO_InitStructE.GPIO_Speed = GPIO_Speed_50MHz;
 	GPIO_Init(GPIOE, &GPIO_InitStructE);
+
+	// Set B signal to 1
+	GPIO_SetBits(GPIOE, on_always);
 }
 
 void initADC() {
@@ -258,220 +256,291 @@ void initADC() {
     ADC_RegularChannelConfig(ADC1, ADC_Channel_1, 1, ADC_SampleTime_144Cycles);
 }
 
+void createQueues() {
+	/* TrafficLoadForCreatorQueue: sender is TrafficFlowAdjustmentTask,
+	 * receiver is TrafficCreatorTask*/
+	xTrafficLoadForCreatorQueue = xQueueCreate( 	QUEUE_LENGTH,		/* The number of items the queue can hold. */
+		sizeof( float ) );	/* The size of each item the queue holds. */
 
-uint16_t readADC() {
-	ADC_SoftwareStartConv(ADC1);
-    while(ADC_GetFlagStatus(ADC1, ADC_FLAG_EOC)) {
-        return ADC_GetConversionValue(ADC1);
-    }
+	/* Add to the registry, for the benefit of kernel aware debugging. */
+	vQueueAddToRegistry( xTrafficLoadForCreatorQueue, "TrafficLoadForCreatorQueue" );
+
+	/* TrafficLoadForLightQueue: sender is TrafficFlowAdjustmentTask,
+	 * receiver is TrafficLightTask */
+	xTrafficLoadForLightQueue = xQueueCreate( QUEUE_LENGTH, sizeof( float ) );
+	vQueueAddToRegistry( xTrafficLoadForLightQueue, "TrafficLoadForLightQueue" );
+
+	/* TrafficQueue: sender is TrafficCreatorTask,
+	 * receiver is TrafficDisplayTask*/
+	xTrafficQueue = xQueueCreate( QUEUE_LENGTH, sizeof( uint16_t ) );
+	vQueueAddToRegistry( xTrafficQueue, "TrafficQueue" );
+
+	/* TrafficLightStatusQueue: sender is trafficLightTask,
+	 * receiver is trafficDisplayTask */
+	xTrafficLightStatusQueue = xQueueCreate( QUEUE_LENGTH, sizeof( uint16_t ) );
+	vQueueAddToRegistry( xTrafficLightStatusQueue, "TrafficLightStatusQueue" );
 }
+
+/*------------------- MIDDLEWARE FUNCTIONS --------------------------------*/
+
+// TODO comments
+
+uint16_t usReadADC() {
+	ADC_SoftwareStartConv(ADC1);
+	uint16_t conversionValue = 0;
+    while(ADC_GetFlagStatus(ADC1, ADC_FLAG_EOC)) {
+        conversionValue = ADC_GetConversionValue(ADC1);
+    }
+
+    //TODO delete
+    printf("Reading conversion value: %d\n", conversionValue);
+
+    return conversionValue;
+}
+
+void vMoveCar(int newCar, int yellow_or_red_light) {
+	//TODO delete
+	printf("In vMoveCar\n");
+
+	if (newCar) {
+		//TODO delete
+		printf("making a new car\n");
+
+		GPIO_SetBits(GPIOE, new_car_pin);
+	}
+	else {
+		GPIO_ResetBits(GPIOE, new_car_pin);
+	}
+
+	if (yellow_or_red_light) {
+		//TODO delete
+		printf("light change!\n");
+
+		GPIO_ResetBits(GPIOE, intersection_car_pin);
+	}
+	else {
+		//TODO delete
+		printf("green light\n");
+		uint8_t bitSet = GPIO_ReadInputDataBit(GPIOC, car_before_intersection_pin);
+
+		if (bitSet == (uint8_t)Bit_SET) {
+
+			//TODO delete
+			printf("car before intersection\n");
+
+			GPIO_SetBits(GPIOE, intersection_car_pin);
+		}
+		else {
+			GPIO_ResetBits(GPIOE, intersection_car_pin);
+		}
+	}
+
+}
+
+void vSetYellowLight() {
+	GPIO_ResetBits(GPIOE, red);
+	GPIO_ResetBits(GPIOE, green);
+	GPIO_SetBits(GPIOE, yellow);
+
+	uint16_t xTrafficLightStatus = 1; // 0 = green, 1 = yellow or red
+	xQueueSend( xTrafficLightStatusQueue, &xTrafficLightStatus, 0);
+}
+
+void vSetRedLight() {
+	GPIO_ResetBits(GPIOE, green);
+	GPIO_ResetBits(GPIOE, yellow);
+	GPIO_SetBits(GPIOE, red);
+}
+
+void vFlipClockBit() {
+	//TODO delete
+	printf("in flip clock bit\n");
+
+	if (clock_on) {
+		GPIO_ResetBits(GPIOD, clock_pin);
+		clock_on = 0;
+	}
+	else {
+		GPIO_SetBits(GPIOD, clock_pin);
+		clock_on = 1;
+	}
+}
+
+/*-------------------------------------- TASKS ----------------------------------*/
+
+static void trafficFlowAdjustmentTask ( void *pvParameters ) {
+	portTickType xNextWakeTime;
+
+		/* Initialize xNextWakeTime - this only needs to be done once. */
+		xNextWakeTime = xTaskGetTickCount();
+
+		for( ;; )
+		{
+			/* Place this task in the blocked state until it is time to run again.
+			The block time is specified in ticks, the constant used converts ticks
+			to ms.  While in the Blocked state this task will not consume any CPU
+			time.  http://www.freertos.org/vtaskdelayuntil.html */
+			vTaskDelayUntil( &xNextWakeTime, mainQUEUE_SEND_PERIOD_MS );
+
+			//TODO delete
+			printf("in trafficFlowAdjustmentTask\n");
+
+			uint16_t conversionValue = usReadADC();
+			/* Normalize conversionValue to trafficLoadValue so that trafficLoadValue is [0,1]
+			 * Divided by 4096 because ADC register is 12 bits.*/
+			float trafficLoadValue = (float) conversionValue / 4096.0;
+
+			//TODO delete
+			printf("traffic load value is %.6f\n", trafficLoadValue);
+
+			/* Overwrite any existing load on the queue, or send to queue if empty */
+			xQueueOverwrite( xTrafficLoadForCreatorQueue, &trafficLoadValue );
+			xQueueOverwrite( xTrafficLoadForLightQueue, &trafficLoadValue );
+		}
+
+
+}
+
+static void trafficCreatorTask () {
+	uint16_t newCar = 1;
+	float xTrafficLoadValue;
+	time_t t;
+
+	// initialize random number generator
+	srand((unsigned) time(&t));
+		for( ;; )
+		{
+			/* Wait until something arrives in the queue - this task will block
+			indefinitely provided INCLUDE_vTaskSuspend is set to 1 in
+			FreeRTOSConfig.h.  http://www.freertos.org/a00118.html */
+			xQueueReceive( xTrafficLoadForCreatorQueue, &xTrafficLoadValue, portMAX_DELAY );
+
+			//TODO delete
+			printf("in trafficCreatorTask\n");
+
+			// generate random number
+			float random_num = (float)rand() / (float)RAND_MAX;
+
+			newCar = (random_num <= xTrafficLoadValue);
+			xQueueSend( xTrafficQueue, &newCar, 0);
+		}
+}
+
+static void trafficLightTask() {
+	float xTrafficLoadValue = 0.0;
+	/* Initialize xNextWakeTime - this only needs to be done once. */
+	portTickType xNextWakeTime = xTaskGetTickCount();
+	uint16_t totalCycleTime = mainCLOCK_PERIOD_MS;
+
+	for ( ;; ) {
+		vTaskDelayUntil( &xNextWakeTime, totalCycleTime );
+
+		/* Check for value in the queue  */
+		xQueueReceive( xTrafficLoadForLightQueue, &xTrafficLoadValue, 0 );
+
+		uint16_t usGreenLightCycles = ((xTrafficLoadValue * 10) + 5);
+		totalCycleTime = (2 * usGreenLightCycles + 4) * mainCLOCK_PERIOD_MS;
+
+		// Set green light
+		GPIO_SetBits(GPIOE, green);
+		GPIO_ResetBits(GPIOE, red);
+		GPIO_ResetBits(GPIOE, yellow);
+
+		uint16_t xTrafficLightStatus = 0; // 0 = green, 1 = yellow or red
+		xQueueSend( xTrafficLightStatusQueue, &xTrafficLightStatus, 0);
+
+		/* Create the software timer as described in the comments at the top of
+		this file.  http://www.freertos.org/FreeRTOS-timers-xTimerCreate.html. */
+		TimerHandle_t xYellowLightTimer = xTimerCreate("YellowLightTimer", /* A text name, purely to help debugging. */
+									usGreenLightCycles * mainCLOCK_PERIOD_MS,		/* The timer period, in this case 1000ms (1s). */
+									pdFALSE,								/* This is a periodic timer, so xAutoReload is set to pdTRUE. */
+									( void * ) 0,						/* The ID is not used, so can be set to anything. */
+									vSetYellowLight				/* The callback function that switches the LED off. */
+		);
+
+		/* Start the created timer.  A block time of zero is used as the timer
+		command queue cannot possibly be full here (this is the first timer to
+		be created, and it is not yet running).
+		http://www.freertos.org/FreeRTOS-timers-xTimerStart.html */
+		xTimerStart( xYellowLightTimer, 0 );
+
+		/* Create the software timer as described in the comments at the top of
+		this file.  http://www.freertos.org/FreeRTOS-timers-xTimerCreate.html. */
+		TimerHandle_t xRedLightTimer = xTimerCreate("RedLightTimer", /* A text name, purely to help debugging. */
+									(usGreenLightCycles + 4) * mainCLOCK_PERIOD_MS,		/* The timer period, in this case 1000ms (1s). */
+									pdFALSE,								/* This is a periodic timer, so xAutoReload is set to pdTRUE. */
+									( void * ) 0,						/* The ID is not used, so can be set to anything. */
+									vSetRedLight				/* The callback function that switches the LED off. */
+		);
+
+		/* Start the created timer.  A block time of zero is used as the timer
+		command queue cannot possibly be full here (this is the first timer to
+		be created, and it is not yet running).
+		http://www.freertos.org/FreeRTOS-timers-xTimerStart.html */
+		xTimerStart( xRedLightTimer, 0 );
+	}
+}
+
+static void trafficDisplayTask() {
+	uint16_t usTrafficLightStatus = 0;
+	uint16_t usTrafficQueueValue = 0;
+	portTickType xNextWakeTime;
+
+	/* Initialize xNextWakeTime - this only needs to be done once. */
+	xNextWakeTime = xTaskGetTickCount();
+
+	for ( ;; ) {
+		vTaskDelayUntil(&xNextWakeTime, mainQUEUE_SEND_PERIOD_MS);
+
+		//TODO delete
+		printf("in trafficDisplayTask\n");
+
+		xQueueReceive( xTrafficQueue, &usTrafficQueueValue, 0);
+		xQueueReceive( xTrafficLightStatusQueue, &usTrafficLightStatus, 0);
+
+		vMoveCar(usTrafficQueueValue, usTrafficLightStatus);
+	}
+}
+
+/* ------------------------------------------- MAIN ------------------------------------------------------ */
 
 int main() {
 	// Initialize everything
+
 	initADC();
 	initGPIO();
+	createQueues();
 
-	while(1) {
-		uint16_t signal_A = GPIO_Pin_0;
-		uint16_t signal_B = GPIO_Pin_1;
-		uint16_t clock1 = GPIO_Pin_0;
+	/* Create the software timer as described in the comments at the top of
+	this file.  http://www.freertos.org/FreeRTOS-timers-xTimerCreate.html. */
+	TimerHandle_t xTrafficClock = xTimerCreate("TrafficClock", /* A text name, purely to help debugging. */
+								mainCLOCK_PERIOD_MS,		/* The timer period, in this case 1000ms (1s). */
+								pdTRUE,								/* This is a periodic timer, so xAutoReload is set to pdTRUE. */
+								( void * ) 0,						/* The ID is not used, so can be set to anything. */
+								vFlipClockBit				/* The callback function that switches the LED off. */
+	);
 
-		GPIO_ResetBits(GPIOD, GPIO_Pin_3);
-		GPIO_SetBits(GPIOE, signal_B);
-		GPIO_SetBits(GPIOD, GPIO_Pin_3);
+	/* Start the created timer.  A block time of zero is used as the timer
+	command queue cannot possibly be full here (this is the first timer to
+	be created, and it is not yet running).
+	http://www.freertos.org/FreeRTOS-timers-xTimerStart.html */
+	xTimerStart( xTrafficClock, 0 );
 
-		int i = 0;
-		GPIO_SetBits(GPIOE, signal_A);
+	xTaskCreate( trafficFlowAdjustmentTask, "Traffic_Flow_Adjustment", configMINIMAL_STACK_SIZE, NULL, 1, NULL);
+	xTaskCreate( trafficCreatorTask, "Traffic_Creator", configMINIMAL_STACK_SIZE, NULL, 1, NULL);
+	xTaskCreate( trafficLightTask, "Traffic_Light", configMINIMAL_STACK_SIZE, NULL, 1, NULL);
+	xTaskCreate( trafficDisplayTask, "Traffic_Display", configMINIMAL_STACK_SIZE, NULL, 1, NULL);
 
-		for(i = 0; i < 8; i++) {
-			uint16_t conversionValue = readADC();
-			//TODO delete
-			printf("Conversion value: %u\n", conversionValue);
+	//TODO delete
+	printf("Tasks created, starting scheduler.......\n");
 
-
-
-			GPIO_SetBits(GPIOD, clock1);
-			Delay(0xFFFFFF);
-
-			GPIO_ResetBits(GPIOD, clock1);
-			Delay(0xFFFFFF);
-			GPIO_ResetBits(GPIOE, signal_A);
-		}
-
-	}
-	// should not return
+	/* Start the tasks running. */
+	vTaskStartScheduler();
 
     return 0;
 }
 
 
-
-/**
-  * @brief  Delay Function.
-  * @param  nCount:specifies the Delay time length.
-  * @retval None
-  */
-void Delay(__IO uint32_t nCount)
-{
-  while(nCount--)
-  {
-  }
-}
-
-//int main(void)
-//{
-//
-//
-//
-//
-//
-//xTimerHandle xExampleSoftwareTimer = NULL;
-//
-//	/* Configure the system ready to run the demo.  The clock configuration
-//	can be done here if it was not done before main() was called. */
-//
-//	prvSetupHardware();
-//
-//
-//	/* Create the queue used by the queue send and queue receive tasks.
-//	http://www.freertos.org/a00116.html */
-//	xQueue = xQueueCreate( 	mainQUEUE_LENGTH,		/* The number of items the queue can hold. */
-//							sizeof( uint32_t ) );	/* The size of each item the queue holds. */
-//	/* Add to the registry, for the benefit of kernel aware debugging. */
-//	vQueueAddToRegistry( xQueue, "MainQueue" );
-//
-//
-//	/* Create the semaphore used by the FreeRTOS tick hook function and the
-//	event semaphore task. */
-//	vSemaphoreCreateBinary( xEventSemaphore );
-//	/* Add to the registry, for the benefit of kernel aware debugging. */
-//	vQueueAddToRegistry( xEventSemaphore, "xEventSemaphore" );
-//
-//
-//	/* Create the queue receive task as described in the comments at the top
-//	of this	file.  http://www.freertos.org/a00125.html */
-//	xTaskCreate( 	prvQueueReceiveTask,			/* The function that implements the task. */
-//					"Rx", 		/* Text name for the task, just to help debugging. */
-//					configMINIMAL_STACK_SIZE, 		/* The size (in words) of the stack that should be created for the task. */
-//					NULL, 							/* A parameter that can be passed into the task.  Not used in this simple demo. */
-//					mainQUEUE_RECEIVE_TASK_PRIORITY,/* The priority to assign to the task.  tskIDLE_PRIORITY (which is 0) is the lowest priority.  configMAX_PRIORITIES - 1 is the highest priority. */
-//					NULL );							/* Used to obtain a handle to the created task.  Not used in this simple demo, so set to NULL. */
-//
-//
-//	/* Create the queue send task in exactly the same way.  Again, this is
-//	described in the comments at the top of the file. */
-//	xTaskCreate( 	prvQueueSendTask,
-//					"TX",
-//					configMINIMAL_STACK_SIZE,
-//					NULL,
-//					mainQUEUE_SEND_TASK_PRIORITY,
-//					NULL );
-//
-//
-//	/* Create the task that is synchronised with an interrupt using the
-//	xEventSemaphore semaphore. */
-//	xTaskCreate( 	prvEventSemaphoreTask,
-//					"Sem",
-//					configMINIMAL_STACK_SIZE,
-//					NULL,
-//					mainEVENT_SEMAPHORE_TASK_PRIORITY,
-//					NULL );
-//
-//
-//	/* Create the software timer as described in the comments at the top of
-//	this file.  http://www.freertos.org/FreeRTOS-timers-xTimerCreate.html. */
-//	xExampleSoftwareTimer = xTimerCreate("LEDTimer", /* A text name, purely to help debugging. */
-//								mainSOFTWARE_TIMER_PERIOD_MS,		/* The timer period, in this case 1000ms (1s). */
-//								pdTRUE,								/* This is a periodic timer, so xAutoReload is set to pdTRUE. */
-//								( void * ) 0,						/* The ID is not used, so can be set to anything. */
-//								vExampleTimerCallback				/* The callback function that switches the LED off. */
-//							);
-//
-//	/* Start the created timer.  A block time of zero is used as the timer
-//	command queue cannot possibly be full here (this is the first timer to
-//	be created, and it is not yet running).
-//	http://www.freertos.org/FreeRTOS-timers-xTimerStart.html */
-//	xTimerStart( xExampleSoftwareTimer, 0 );
-//
-//	/* Start the tasks and timer running. */
-//	vTaskStartScheduler();
-//
-//	/* If all is well, the scheduler will now be running, and the following line
-//	will never be reached.  If the following line does execute, then there was
-//	insufficient FreeRTOS heap memory available for the idle and/or timer tasks
-//	to be created.  See the memory management section on the FreeRTOS web site
-//	for more details.  http://www.freertos.org/a00111.html */
-//	for( ;; );
-//}
-/*-----------------------------------------------------------*/
-
-static void vExampleTimerCallback( xTimerHandle xTimer )
-{
-	/* The timer has expired.  Count the number of times this happens.  The
-	timer that calls this function is an auto re-load timer, so it will
-	execute periodically. http://www.freertos.org/RTOS-software-timer.html */
-	ulCountOfTimerCallbackExecutions++;
-}
-/*-----------------------------------------------------------*/
-
-static void prvQueueSendTask( void *pvParameters )
-{
-portTickType xNextWakeTime;
-const uint32_t ulValueToSend = 100UL;
-
-	/* Initialise xNextWakeTime - this only needs to be done once. */
-	xNextWakeTime = xTaskGetTickCount();
-
-	for( ;; )
-	{
-		/* Place this task in the blocked state until it is time to run again.
-		The block time is specified in ticks, the constant used converts ticks
-		to ms.  While in the Blocked state this task will not consume any CPU
-		time.  http://www.freertos.org/vtaskdelayuntil.html */
-		vTaskDelayUntil( &xNextWakeTime, mainQUEUE_SEND_PERIOD_MS );
-
-		/* Send to the queue - causing the queue receive task to unblock and
-		increment its counter.  0 is used as the block time so the sending
-		operation will not block - it shouldn't need to block as the queue
-		should always be empty at this point in the code. */
-		xQueueSend( xQueue, &ulValueToSend, 0 );
-	}
-}
-/*-----------------------------------------------------------*/
-
-static void prvQueueReceiveTask( void *pvParameters )
-{
-uint32_t ulReceivedValue;
-
-	for( ;; )
-	{
-		/* Wait until something arrives in the queue - this task will block
-		indefinitely provided INCLUDE_vTaskSuspend is set to 1 in
-		FreeRTOSConfig.h.  http://www.freertos.org/a00118.html */
-		xQueueReceive( xQueue, &ulReceivedValue, portMAX_DELAY );
-
-		/*  To get here something must have been received from the queue, but
-		is it the expected value?  If it is, increment the counter. */
-		if( ulReceivedValue == 100UL )
-		{
-			/* Count the number of items that have been received correctly. */
-			ulCountOfItemsReceivedOnQueue++;
-		}
-	}
-}
-/*-----------------------------------------------------------*/
-
-static void prvEventSemaphoreTask( void *pvParameters )
-{
-	for( ;; )
-	{
-		/* Block until the semaphore is 'given'. */
-		xSemaphoreTake( xEventSemaphore, portMAX_DELAY );
-
-		/* Count the number of times the semaphore is received. */
-		ulCountOfReceivedSemaphores++;
-	}
-}
 /*-----------------------------------------------------------*/
 
 void vApplicationTickHook( void )
@@ -518,7 +587,7 @@ void vApplicationMallocFailedHook( void )
 
 	Called if a call to pvPortMalloc() fails because there is insufficient
 	free memory available in the FreeRTOS heap.  pvPortMalloc() is called
-	internally by FreeRTOS API functions that create tasks, queues, software 
+	internally by FreeRTOS API functions that create tasks, queues, software
 	timers, and semaphores.  The size of the FreeRTOS heap is set by the
 	configTOTAL_HEAP_SIZE configuration constant in FreeRTOSConfig.h. */
 	for( ;; );
@@ -561,12 +630,4 @@ volatile size_t xFreeStackSpace;
 }
 /*-----------------------------------------------------------*/
 
-static void prvSetupHardware( void )
-{
-	/* Ensure all priority bits are assigned as preemption priority bits.
-	http://www.freertos.org/RTOS-Cortex-M3-M4.html */
-	NVIC_SetPriorityGrouping( 0 );
 
-	/* TODO: Setup the clocks, etc. here, if they were not configured before
-	main() was called. */
-}
