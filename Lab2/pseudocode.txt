@@ -8,14 +8,14 @@ void trafficFlowAdjustmentTask ( ) {
 		potentiometer_value <-- readADC()
 		traffic_load <-- normalized potentiometer_value
 		
-		// send traffic_load to queue so that other tasks can read the value
+		// send traffic_load to TrafficLoadForCreatorQueue so that creator task can read the value
+		xQueueSend()
+		
+		// send traffic_load to TrafficLoadForLightQueue so that light task can read the value
 		xQueueSend()
 }
 
 void trafficCreatorTask ( ) {
-	create software timer
-	start software timer
-	
 	for ( ;; ) {
 		// place this task in blocked state until it is time to run again
 		vTaskDelayUntil()
@@ -37,20 +37,21 @@ void trafficLightTask ( ) {
 	
 	for ( ;; ) {
 		// place this task in blocked state until timer expires
+		// light is green for the time being
 		vTaskDelayUntil()
 		
-		read traffic_load value from traffic load queue
-		set light cycle times based on traffic load queue
-		change lights based on cycle times
-		// put light status (colour) on traffic light status queue
-		xQueueSend()
+		// set light to yellow 
+		timerToYellow()
+		
+		// set light to red
+		timerToRed()
+		
+		// read TrafficLoadForLightQueue
+		// determine new value for NextLightCycle
 	}
 }
 
 void trafficDisplayTask () {
-	create software timer
-	start software timer
-	
 	for ( ;; ) {
 		// place this task in blocked state until timer expires
 		vTaskDelayUntil()
