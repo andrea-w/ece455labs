@@ -156,7 +156,7 @@ converted to ticks using the portTICK_RATE_MS constant. */
 
 /* The period of the example software timer, specified in milliseconds, and
 converted to ticks using the portTICK_RATE_MS constant. */
-#define mainCLOCK_PERIOD_MS		( 1000 / portTICK_RATE_MS )
+#define mainTRAFFIC_MOVE_PERIOD_MS		( 500 / portTICK_RATE_MS )
 
 /* The number of items the queue can hold. */
 #define QUEUE_LENGTH					( 1 )
@@ -292,48 +292,90 @@ uint16_t usReadADC() {
         conversionValue = ADC_GetConversionValue(ADC1);
     }
 
-    //TODO delete
-    printf("Reading conversion value: %d\n", conversionValue);
-
     return conversionValue;
 }
 
-void vMoveCar(int newCar, int yellow_or_red_light) {
-	//TODO delete
-	printf("In vMoveCar\n");
+// TODO comments
+uint32_t uPadBits(uint32_t before) {
+	uint32_t mask_for_last_section = 0b0000000000000111111;
+	uint32_t mask_for_middle_section = 0b00000001111111000000;
+	uint32_t get_6th_digit_mask = 0b100000;
+	uint32_t get_7th_digit_mask = 0b1000000;
+	uint32_t get_13th_digit_mask = 0b1000000000000;
+	uint32_t get_15th_digit_mask = 0b100000000000000;
 
-	if (newCar) {
-		//TODO delete
-		printf("making a new car\n");
 
-		GPIO_SetBits(GPIOE, new_car_pin);
-	}
-	else {
-		GPIO_ResetBits(GPIOE, new_car_pin);
-	}
+	uint32_t last_section = before & mask_for_last_section;
+	uint32_t digit_6 = before & get_6th_digit_mask;
 
-	if (yellow_or_red_light) {
-		//TODO delete
-		printf("light change!\n");
+	uint32_t middle_section = before & mask_for_middle_section;
+	uint32_t digit_13 = before & get_13th_digit_mask;
 
-		GPIO_ResetBits(GPIOE, intersection_car_pin);
-	}
-	else {
-		//TODO delete
-		printf("green light\n");
-		uint8_t bitSet = GPIO_ReadInputDataBit(GPIOC, car_before_intersection_pin);
+	last_section = last_section | ((digit_6 == 0) ? 0 : get_7th_digit_mask);
 
-		if (bitSet == (uint8_t)Bit_SET) {
+	middle_section = (middle_section << 1) | ((digit_13 == 0) ? 0 : get_15th_digit_mask);
 
-			//TODO delete
-			printf("car before intersection\n");
+	uint32_t first_section = before & 0b1111110000000000000;
+	first_section = first_section << 2;
 
-			GPIO_SetBits(GPIOE, intersection_car_pin);
+	uint32_t padded_traffic = (first_section | middle_section | last_section);
+
+	return padded_traffic;
+
+}
+
+void vPushToShiftRegisters(uint32_t valueToDisplay) {
+	GPIO_ResetBits(GPIOD, clear);
+	GPIO_SetBits(GPIOD, clear);
+	GPIO_ResetBits(GPIOE, new_car_pin);
+	GPIO_ResetBits(GPIOD, clock_pin);
+
+	valueToDisplay = uPadBits(valueToDisplay);
+
+	int i=0;
+	for(i=0; i < 21; i++) {
+		if ((valueToDisplay & 1)) {
+			GPIO_SetBits(GPIOE, new_car_pin);
+			GPIO_SetBits(GPIOD, clock_pin);
+			GPIO_ResetBits(GPIOE, new_car_pin);
 		}
 		else {
-			GPIO_ResetBits(GPIOE, intersection_car_pin);
+			GPIO_SetBits(GPIOD, clock_pin);
 		}
+
+		GPIO_ResetBits(GPIOD, clock_pin);
+
+		valueToDisplay = valueToDisplay >> 1;
 	}
+}
+
+uint32_t uMoveCars(int newCar, int yellow_or_red_light, uint32_t uTotalTraffic) {
+	uint8_t preIntersectionTraffic = (uTotalTraffic & 0b1111111100000000000) >> 11;
+	uTotalTraffic = uTotalTraffic >> 1;
+
+	if (yellow_or_red_light) {
+		// Shift cars before intersection to fill spaces if any
+		int i = 0;
+		int carInFront = 0b1;
+		int carBehind = 0b10;
+		for (i = 0; i < 7; i++) {
+			if (!(preIntersectionTraffic & carInFront) && (preIntersectionTraffic & carBehind)) {
+				preIntersectionTraffic = preIntersectionTraffic | carInFront;
+				preIntersectionTraffic = preIntersectionTraffic ^ carBehind;
+			}
+			carInFront = carInFront << 1;
+			carBehind = carBehind << 1;
+		}
+
+		uTotalTraffic = (uTotalTraffic & 0b0000000011111111111) | (preIntersectionTraffic << 11);
+		uTotalTraffic = uTotalTraffic & 0b1111111101111111111;
+	}
+
+	if (newCar) {
+		uTotalTraffic = uTotalTraffic | 0b1000000000000000000;
+	}
+
+	return uTotalTraffic;
 
 }
 
@@ -353,9 +395,6 @@ void vSetRedLight() {
 }
 
 void vFlipClockBit() {
-	//TODO delete
-	printf("in flip clock bit\n");
-
 	if (clock_on) {
 		GPIO_ResetBits(GPIOD, clock_pin);
 		clock_on = 0;
@@ -382,16 +421,10 @@ static void trafficFlowAdjustmentTask ( void *pvParameters ) {
 			time.  http://www.freertos.org/vtaskdelayuntil.html */
 			vTaskDelayUntil( &xNextWakeTime, mainQUEUE_SEND_PERIOD_MS );
 
-			//TODO delete
-			printf("in trafficFlowAdjustmentTask\n");
-
 			uint16_t conversionValue = usReadADC();
 			/* Normalize conversionValue to trafficLoadValue so that trafficLoadValue is [0,1]
 			 * Divided by 4096 because ADC register is 12 bits.*/
 			float trafficLoadValue = (float) conversionValue / 4096.0;
-
-			//TODO delete
-			printf("traffic load value is %.6f\n", trafficLoadValue);
 
 			/* Overwrite any existing load on the queue, or send to queue if empty */
 			xQueueOverwrite( xTrafficLoadForCreatorQueue, &trafficLoadValue );
@@ -415,11 +448,11 @@ static void trafficCreatorTask () {
 			FreeRTOSConfig.h.  http://www.freertos.org/a00118.html */
 			xQueueReceive( xTrafficLoadForCreatorQueue, &xTrafficLoadValue, portMAX_DELAY );
 
-			//TODO delete
-			printf("in trafficCreatorTask\n");
-
 			// generate random number
 			float random_num = (float)rand() / (float)RAND_MAX;
+
+			xTrafficLoadValue = xTrafficLoadValue < 0.1 ? 0.1 : xTrafficLoadValue;
+			xTrafficLoadValue = xTrafficLoadValue > 0.9 ? 0.9 : xTrafficLoadValue;
 
 			newCar = (random_num <= xTrafficLoadValue);
 			xQueueSend( xTrafficQueue, &newCar, 0);
@@ -430,7 +463,7 @@ static void trafficLightTask() {
 	float xTrafficLoadValue = 0.0;
 	/* Initialize xNextWakeTime - this only needs to be done once. */
 	portTickType xNextWakeTime = xTaskGetTickCount();
-	uint16_t totalCycleTime = mainCLOCK_PERIOD_MS;
+	uint16_t totalCycleTime = mainTRAFFIC_MOVE_PERIOD_MS;
 
 	for ( ;; ) {
 		vTaskDelayUntil( &xNextWakeTime, totalCycleTime );
@@ -438,8 +471,8 @@ static void trafficLightTask() {
 		/* Check for value in the queue  */
 		xQueueReceive( xTrafficLoadForLightQueue, &xTrafficLoadValue, 0 );
 
-		uint16_t usGreenLightCycles = ((xTrafficLoadValue * 10) + 5);
-		totalCycleTime = (2 * usGreenLightCycles + 4) * mainCLOCK_PERIOD_MS;
+		uint16_t usGreenLightCycles = 15 - xTrafficLoadValue * 10;
+		totalCycleTime = (2 * usGreenLightCycles + 4) * mainTRAFFIC_MOVE_PERIOD_MS;
 
 		// Set green light
 		GPIO_SetBits(GPIOE, green);
@@ -452,7 +485,7 @@ static void trafficLightTask() {
 		/* Create the software timer as described in the comments at the top of
 		this file.  http://www.freertos.org/FreeRTOS-timers-xTimerCreate.html. */
 		TimerHandle_t xYellowLightTimer = xTimerCreate("YellowLightTimer", /* A text name, purely to help debugging. */
-									usGreenLightCycles * mainCLOCK_PERIOD_MS,		/* The timer period, in this case 1000ms (1s). */
+									usGreenLightCycles * mainTRAFFIC_MOVE_PERIOD_MS,		/* The timer period, in this case 1000ms (1s). */
 									pdFALSE,								/* This is a periodic timer, so xAutoReload is set to pdTRUE. */
 									( void * ) 0,						/* The ID is not used, so can be set to anything. */
 									vSetYellowLight				/* The callback function that switches the LED off. */
@@ -467,7 +500,7 @@ static void trafficLightTask() {
 		/* Create the software timer as described in the comments at the top of
 		this file.  http://www.freertos.org/FreeRTOS-timers-xTimerCreate.html. */
 		TimerHandle_t xRedLightTimer = xTimerCreate("RedLightTimer", /* A text name, purely to help debugging. */
-									(usGreenLightCycles + 4) * mainCLOCK_PERIOD_MS,		/* The timer period, in this case 1000ms (1s). */
+									(usGreenLightCycles + 4) * mainTRAFFIC_MOVE_PERIOD_MS,		/* The timer period, in this case 1000ms (1s). */
 									pdFALSE,								/* This is a periodic timer, so xAutoReload is set to pdTRUE. */
 									( void * ) 0,						/* The ID is not used, so can be set to anything. */
 									vSetRedLight				/* The callback function that switches the LED off. */
@@ -485,20 +518,19 @@ static void trafficDisplayTask() {
 	uint16_t usTrafficLightStatus = 0;
 	uint16_t usTrafficQueueValue = 0;
 	portTickType xNextWakeTime;
+	uint32_t uTotalTraffic = 0;
 
 	/* Initialize xNextWakeTime - this only needs to be done once. */
 	xNextWakeTime = xTaskGetTickCount();
 
 	for ( ;; ) {
-		vTaskDelayUntil(&xNextWakeTime, mainQUEUE_SEND_PERIOD_MS);
-
-		//TODO delete
-		printf("in trafficDisplayTask\n");
+		vTaskDelayUntil(&xNextWakeTime, mainTRAFFIC_MOVE_PERIOD_MS);
 
 		xQueueReceive( xTrafficQueue, &usTrafficQueueValue, 0);
 		xQueueReceive( xTrafficLightStatusQueue, &usTrafficLightStatus, 0);
 
-		vMoveCar(usTrafficQueueValue, usTrafficLightStatus);
+		uTotalTraffic = uMoveCars(usTrafficQueueValue, usTrafficLightStatus, uTotalTraffic);
+		vPushToShiftRegisters(uTotalTraffic);
 	}
 }
 
@@ -511,28 +543,10 @@ int main() {
 	initGPIO();
 	createQueues();
 
-	/* Create the software timer as described in the comments at the top of
-	this file.  http://www.freertos.org/FreeRTOS-timers-xTimerCreate.html. */
-	TimerHandle_t xTrafficClock = xTimerCreate("TrafficClock", /* A text name, purely to help debugging. */
-								mainCLOCK_PERIOD_MS,		/* The timer period, in this case 1000ms (1s). */
-								pdTRUE,								/* This is a periodic timer, so xAutoReload is set to pdTRUE. */
-								( void * ) 0,						/* The ID is not used, so can be set to anything. */
-								vFlipClockBit				/* The callback function that switches the LED off. */
-	);
-
-	/* Start the created timer.  A block time of zero is used as the timer
-	command queue cannot possibly be full here (this is the first timer to
-	be created, and it is not yet running).
-	http://www.freertos.org/FreeRTOS-timers-xTimerStart.html */
-	xTimerStart( xTrafficClock, 0 );
-
 	xTaskCreate( trafficFlowAdjustmentTask, "Traffic_Flow_Adjustment", configMINIMAL_STACK_SIZE, NULL, 1, NULL);
 	xTaskCreate( trafficCreatorTask, "Traffic_Creator", configMINIMAL_STACK_SIZE, NULL, 1, NULL);
 	xTaskCreate( trafficLightTask, "Traffic_Light", configMINIMAL_STACK_SIZE, NULL, 1, NULL);
 	xTaskCreate( trafficDisplayTask, "Traffic_Display", configMINIMAL_STACK_SIZE, NULL, 1, NULL);
-
-	//TODO delete
-	printf("Tasks created, starting scheduler.......\n");
 
 	/* Start the tasks running. */
 	vTaskStartScheduler();
