@@ -472,7 +472,8 @@ static void trafficLightTask() {
 		xQueueReceive( xTrafficLoadForLightQueue, &xTrafficLoadValue, 0 );
 
 		uint16_t usGreenLightCycles = 15 - xTrafficLoadValue * 10;
-		totalCycleTime = (2 * usGreenLightCycles + 4) * mainTRAFFIC_MOVE_PERIOD_MS;
+		uint16_t usRedLightCycles = 15 - xTrafficLoadValue * 14;
+		totalCycleTime = (usRedLightCycles + usGreenLightCycles + 4) * mainTRAFFIC_MOVE_PERIOD_MS;
 
 		// Set green light
 		GPIO_SetBits(GPIOE, green);
