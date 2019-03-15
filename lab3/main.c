@@ -1,27 +1,21 @@
 /*
     FreeRTOS V9.0.0 - Copyright (C) 2016 Real Time Engineers Ltd.
     All rights reserved
-
     VISIT http://www.FreeRTOS.org TO ENSURE YOU ARE USING THE LATEST VERSION.
-
     This file is part of the FreeRTOS distribution.
-
     FreeRTOS is free software; you can redistribute it and/or modify it under
     the terms of the GNU General Public License (version 2) as published by the
     Free Software Foundation >>>> AND MODIFIED BY <<<< the FreeRTOS exception.
-
     ***************************************************************************
     >>!   NOTE: The modification to the GPL is included to allow you to     !<<
     >>!   distribute a combined work that includes FreeRTOS without being   !<<
     >>!   obliged to provide the source code for proprietary components     !<<
     >>!   outside of the FreeRTOS kernel.                                   !<<
     ***************************************************************************
-
     FreeRTOS is distributed in the hope that it will be useful, but WITHOUT ANY
     WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
     FOR A PARTICULAR PURPOSE.  Full license text is available on the following
     link: http://www.freertos.org/a00114.html
-
     ***************************************************************************
      *                                                                       *
      *    FreeRTOS provides completely free yet professionally developed,    *
@@ -35,35 +29,27 @@
      *    http://www.FreeRTOS.org/Documentation                              *
      *                                                                       *
     ***************************************************************************
-
     http://www.FreeRTOS.org/FAQHelp.html - Having a problem?  Start by reading
     the FAQ page "My application does not run, what could be wrong?".  Have you
     defined configASSERT()?
-
     http://www.FreeRTOS.org/support - In return for receiving this top quality
     embedded software for free we request you assist our global community by
     participating in the support forum.
-
     http://www.FreeRTOS.org/training - Investing in training allows your team to
     be as productive as possible as early as possible.  Now you can receive
     FreeRTOS training directly from Richard Barry, CEO of Real Time Engineers
     Ltd, and the world's leading authority on the world's leading RTOS.
-
     http://www.FreeRTOS.org/plus - A selection of FreeRTOS ecosystem products,
     including FreeRTOS+Trace - an indispensable productivity tool, a DOS
     compatible FAT file system, and our tiny thread aware UDP/IP stack.
-
     http://www.FreeRTOS.org/labs - Where new FreeRTOS products go to incubate.
     Come and try FreeRTOS+TCP, our new open source TCP/IP stack for FreeRTOS.
-
     http://www.OpenRTOS.com - Real Time Engineers ltd. license FreeRTOS to High
     Integrity Systems ltd. to sell under the OpenRTOS brand.  Low cost OpenRTOS
     licenses offer ticketed support, indemnification and commercial middleware.
-
     http://www.SafeRTOS.com - High Integrity Systems also provide a safety
     engineered and independently SIL3 certified version for use in safety and
     mission critical applications that require provable dependability.
-
     1 tab == 4 spaces!
 */
 
@@ -86,15 +72,19 @@
 // TODO figure out how long these need to be
 #define CREATE_TASK_QUEUE_LENGTH	4
 #define DELETE_TASK_QUEUE_LENGTH	4
+#define TASK1_QUEUE_SEND_PERIOD_MS	(100 / portTICK_RATE_MS)
+#define TASK2_QUEUE_SEND_PERIOD_MS	(50 / portTICK_RATE_MS)
+#define TASK3_QUEUE_SEND_PERIOD_MS	(10 / portTICK_RATE_MS)
+#define SCHEDULER_TASK_PERIOD_MS	(1 / portTICK_RATE_MS)
 
-struct TaskListItem {
+typedef struct TaskListItem {
 	TaskHandle_t tHandle;
-	uint_32 deadline;
-	uint_32 taskType;
-	uint_32 creationTime;
+	uint32_t deadline;
+	uint32_t taskType;
+	uint32_t creationTime;
 	struct ActiveTaskListItem *nextCell;
 	struct ActiveTaskListItem *previousCell;
-};
+} TaskListItem;
 
 /*------------------------------ GLOBAL VARIABLES -----------------------------*/
 
@@ -136,15 +126,25 @@ void createQueues() {
 // TODO comments
 
 /*
- * Creates a new task with the specified period and execution time,
- * and requests that the scheduler add it to the list of active tasks.
+ * Takes taskHandle as parameter (sent by task creation callback function)
+ * and adds the task to the queue of active tasks to be scheduled
  */
-static void ddTCreate(int periodMS, int execTimeMS) {
+static void ddTCreate(xTaskHandle taskToSchedule) {
+	static xQueueHandle xSchedulerResponseQueue = NULL;
 	// open a SchedulerResponseQueue to scheduler task
-	// create a new task with specified execution time and period
-	// put task on CreateTaskQueue (w period, exec time, task handle)
+	xSchedulerResponseQueue = xQueueCreate(1, sizeof(float));
+	// add the queue to the registry
+	vQueueAddToRegistry(xSchedulerResponseQueue, "SchedulerResponseQueue");
+	// put task on CreateTaskQueue (w task handle)
+	// TODO? Should we be putting the task handle on the CreateTaskQueue, or the SchedulerResponseQueue on the
+	// CreateTaskQueue? I don't see how the xSchedulerResponseQueue would ever be modified if we're passing
+	// the task handle to the CreateTaskQueue
+	// (THIS APPLIES TO ALL THE dd FUNCTIONS)
+	xQueueSend(xCreateTaskQueue, taskToSchedule, 0);
 	// wait for response from scheduler task
+	xQueueReceive(xSchedulerResponseQueue, NULL, 0);
 	// destroy SchedulerResponseQueue
+	vQueueDelete(&xSchedulerResponseQueue);
 	return;
 }
 
@@ -153,10 +153,17 @@ static void ddTCreate(int periodMS, int execTimeMS) {
  * from the list of active tasks.
  */
 static void ddTDelete(TaskHandle_t taskToDelete) {
+	static xQueueHandle xSchedulerResponseQueue = NULL;
 	// open a SchedulerResponseQueue to scheduler task
+	xSchedulerResponseQueue = xQueueCreate(1, sizeof(float));
+	// add the queue to the registry
+	vQueueAddToRegistry(xSchedulerResponseQueue, "SchedulerResponseQueue");
 	// put task on DeleteTaskQueue (w task handle) which is read by scheduler
+	xQueueSend(xDeleteTaskQueue, taskToDelete, 0);
 	// wait for response from scheduler
+	xQueueReceive(xSchedulerResponseQueue, NULL, 0);
 	// destroy SchedulerResponseQueue
+	vQueueDelete(&xSchedulerResponseQueue);
 	return;
 }
 
@@ -165,10 +172,17 @@ static void ddTDelete(TaskHandle_t taskToDelete) {
  */
 static TaskListItem* ddReturnActiveList() {
 	TaskListItem* activeTasks = NULL;
+	static xQueueHandle xSchedulerResponseQueue = NULL;
 	// open a SchedulerResponseQueue to scheduler task
+	xSchedulerResponseQueue = xQueueCreate(1, sizeof(TaskListItem*));
+	// add the queue to the registry
+	vQueueAddToRegistry(xSchedulerResponseQueue, "SchedulerResponseQueue");
 	// Ask scheduler for list of active tasks (will have been copied from scheduler internal list at time of request)
+	xQueueSend(xActiveListRequestQueue, &activeTasks, 0);
 	// wait for response from scheduler
+	xQueueReceive(xSchedulerResponseQueue, &activeTasks, 0);
 	// destroy SchedulerResponseQueue
+	vQueueDelete(&xSchedulerResponseQueue);
 	return activeTasks;
 }
 
@@ -177,22 +191,45 @@ static TaskListItem* ddReturnActiveList() {
  */
 static TaskListItem* ddReturnOverdueList() {
 	TaskListItem* overdueTasks = NULL;
+	static xQueueHandle xSchedulerResponseQueue = NULL;
 	// open a SchedulerResponseQueue to scheduler task
+	xSchedulerResponseQueue = xQueueCreate(1, sizeof(TaskListItem*));
+	// add the queue to the registry
+	vQueueAddToRegistry(xSchedulerResponseQueue, "SchedulerResponseQueue");
 	// Ask scheduler for list of overdue tasks
+	xQueueSend(xOutdatedListRequestQueue, &overdueTasks, 0);
 	// wait for response from scheduler
+	xQueueReceive(xSchedulerResponseQueue, &overdueTasks, 0);
 	// destroy SchedulerResponseQueue
+	vQueueDelete(&xSchedulerResponseQueue);
 	return overdueTasks;
 }
 
 /*-------------------------------------- TASKS ----------------------------------*/
 
 static void ddSchedulerTask(void *pvParameters) {
-	//loop?
-	// check CreateTaskQueue
-	// check DeleteTaskQueue
-	// if task created, schedule new task
-	// if task deleted, remove from schedule
-	// check for overdue tasks; remove from active list and add to overdue list
+	portTickType xNextWakeTime = xTaskGetTickCount();
+	TaskListItem* createdTasks = NULL;
+	TaskListItem* deletedTasks = NULL;
+
+	//loop
+	for(;;) {
+		// delay on interval
+		vTaskDelayUntil(&xNextWakeTime, SCHEDULER_TASK_PERIOD_MS);
+		// check CreateTaskQueue
+		xQueuePeek(xCreateTaskQueue, &createdTasks, 0);
+		// check DeleteTaskQueue
+		xQueuePeek(xDeleteTaskQueue, &deletedTasks, 0);
+		// if task created, schedule new task
+		if (createdTasks != NULL) {
+			// TODO schedule the task(s)
+		}
+		// if task deleted, remove from schedule
+		if (deletedTasks != NULL) {
+			// TODO delete the task(s)
+		}
+		// check for overdue tasks; remove from active list and add to overdue list
+	}
 }
 
 
@@ -205,12 +242,47 @@ static void userTask3(void *pvParameters) { }
 
 /* Task generators generate user tasks at specified intervals */
 static void ddTask1GeneratorTask(void *pvParameters) {
-	// on interval: (vTaskDelayUntil...)
-	// create new user task
-	// call ddTCreate function
+	TaskHandle_t xTask1Handle = NULL;
+
+	portTickType xNextWakeTime = xTaskGetTickCount();
+
+	for(;;) {
+		// on interval: (vTaskDelayUntil...)
+		vTaskDelayUntil(&xNextWakeTime, TASK1_QUEUE_SEND_PERIOD_MS);
+		// create new user task
+		xTaskCreate(userTask1, "Periodic_Task_1", configMINIMAL_STACK_SIZE, &pvParameters, 3, &xTask1Handle);
+		// call ddTCreate function
+		ddTCreate(&xTask1Handle);
+	}
 }
-static void ddTask2GeneratorTask(void *pvParameters) {}
-static void ddTask3GeneratorTask(void *pvParameters) {}
+static void ddTask2GeneratorTask(void *pvParameters) {
+	TaskHandle_t xTask2Handle = NULL;
+
+	portTickType xNextWakeTime = xTaskGetTickCount();
+
+	for(;;) {
+		// delay for interval
+		vTaskDelayUntil(&xNextWakeTime, TASK2_QUEUE_SEND_PERIOD_MS);
+		// create new user task 2
+		xTaskCreate(userTask2, "Periodic_Task_2", configMINIMAL_STACK_SIZE, &pvParameters, 2, &xTask2Handle);
+		// call ddTCreate
+		ddTCreate(&xTask2Handle);
+	}
+}
+static void ddTask3GeneratorTask(void *pvParameters) {
+	TaskHandle_t xTask3Handle = NULL;
+
+	portTickType xNextWakeTime = xTaskGetTickCount();
+
+	for(;;) {
+		// delay for interval
+		vTaskDelayUntil(&xNextWakeTime, TASK3_QUEUE_SEND_PERIOD_MS);
+		// create new user task 3
+		xTaskCreate(userTask3, "Periodic_Task_3", configMINIMAL_STACK_SIZE, &pvParameters, 1, &xTask3Handle);
+		// call ddTCreate
+		ddTCreate(&xTask3Handle);
+	}
+}
 
 static void monitorTask(void *pvParameters) {
 	// lowest priority!
@@ -249,7 +321,6 @@ static uint32_t ulCount = 0;
 
 	/* The RTOS tick hook function is enabled by setting configUSE_TICK_HOOK to
 	1 in FreeRTOSConfig.h.
-
 	"Give" the semaphore on every 500th tick interrupt. */
 	ulCount++;
 	if(ulCount >= 500UL)
@@ -257,7 +328,6 @@ static uint32_t ulCount = 0;
 		/* This function is called from an interrupt context (the RTOS tick
 		interrupt),	so only ISR safe API functions can be used (those that end
 		in "FromISR()".
-
 		xHigherPriorityTaskWoken was initialised to pdFALSE, and will be set to
 		pdTRUE by xSemaphoreGiveFromISR() if giving the semaphore unblocked a
 		task that has equal or higher priority than the interrupted task.
@@ -272,7 +342,6 @@ static uint32_t ulCount = 0;
 	running task was unblocked).  The syntax required to context switch from
 	an interrupt is port dependent, so check the documentation of the port you
 	are using.  http://www.freertos.org/a00090.html
-
 	In this case, the function is running in the context of the tick interrupt,
 	which will automatically check for the higher priority task to run anyway,
 	so no further action is required. */
@@ -283,7 +352,6 @@ void vApplicationMallocFailedHook(void)
 {
 	/* The malloc failed hook is enabled by setting
 	configUSE_MALLOC_FAILED_HOOK to 1 in FreeRTOSConfig.h.
-
 	Called if a call to pvPortMalloc() fails because there is insufficient
 	free memory available in the FreeRTOS heap.  pvPortMalloc() is called
 	internally by FreeRTOS API functions that create tasks, queues, software
@@ -313,7 +381,6 @@ volatile size_t xFreeStackSpace;
 
 	/* The idle task hook is enabled by setting configUSE_IDLE_HOOK to 1 in
 	FreeRTOSConfig.h.
-
 	This function is called on each cycle of the idle task.  In this case it
 	does nothing useful, other than report the amount of FreeRTOS heap that
 	remains unallocated. */
@@ -328,5 +395,3 @@ volatile size_t xFreeStackSpace;
 	}
 }
 /*-----------------------------------------------------------*/
-
-
