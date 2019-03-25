@@ -61,6 +61,7 @@
 
 /* Kernel includes. */
 #include "stm32f4xx_conf.h"
+#include "stm32f4_discovery.h"
 #include "../FreeRTOS_Source/include/FreeRTOS.h"
 #include "../FreeRTOS_Source/include/queue.h"
 #include "../FreeRTOS_Source/include/semphr.h"
@@ -122,14 +123,23 @@ float utilization = 0.0;
 
 /*----------------------------- INITIALIZATION FUNCTIONS ------------------------------*/
 
-/* Initializes the GPIO ports */
-void initGPIO() { /* TODO */ }
+/* Initialize board LEDs and push button */
+static void initBoard() {
+	// Initialize LEDs
+	STM_EVAL_LEDInit(0); //amber
+	STM_EVAL_LEDInit(1); //green
+	STM_EVAL_LEDInit(2); //red
+	STM_EVAL_LEDInit(3); //blue
+
+	// Initialize user push button
+	STM_EVAL_PBInit(BUTTON_USER, BUTTON_MODE_EXTI);
+}
 
 /* Creates queues used for inter-task communication:
  *	 1) CreateTaskQueue
  *   2) DeleteTaskQueue
  */
-void createQueues() {
+static void createQueues() {
 	/* CreateTaskQueue: sender is dd_tcreate, receiver is DDSchedulerTask */
 	xSchedulerMessageQueue = xQueueCreate(TASK_QUEUE_LENGTH, /* The number of items the queue can hold. */
 		sizeof(float));	/* The size of each item the queue holds. */
@@ -137,9 +147,19 @@ void createQueues() {
 	/* Add to the registry, for the benefit of kernel aware debugging. */
 	vQueueAddToRegistry(xSchedulerMessageQueue, "SchedulerMessageQueue");
 }
-
 /*------------------- FUNCTIONS --------------------------------*/
+
+
 // TODO comments
+
+/* Turn off all board LEDs */
+static void turnOffLEDs() {
+	STM_EVAL_LEDOff(0);
+	STM_EVAL_LEDOff(1);
+	STM_EVAL_LEDOff(2);
+	STM_EVAL_LEDOff(3);
+}
+
 
 /*
  * Takes taskHandle as parameter (sent by task creation callback function)
@@ -360,17 +380,23 @@ static void ddSchedulerTask(void *pvParameters) {
 		TaskListItem taskListItem = receivedMessage.taskListItem;
 		switch(taskListItem.taskType) {
 		case CREATION_MESSAGE:
+			// Add task to active task list, then respond to caller
 			addTaskToEndOfList(activeTasks, &taskListItem);
+			xQueueSend(receivedMessage.responseQueueHandle, 0, 0);
 			break;
 		case DELETION_MESSAGE:
+			// Delete task from active task list, then respond to caller
 			activeTasks = deleteTaskByHandle(activeTasks, taskListItem.tHandle);
+			xQueueSend(receivedMessage.responseQueueHandle, 0, 0);
 			break;
 		case ACTIVE_REQUEST:
-			// TODO make copy
+			// TODO make copy?
+			// Send a copy of the active tasks list to the caller
 			xQueueSend(receivedMessage.responseQueueHandle, activeTasks, 0);
 			break;
 		case OVERDUE_REQUEST:
 			// TODO make copy
+			// Send a copy of the overdue tasks list to the caller
 			xQueueSend(receivedMessage.responseQueueHandle, overdueTasks, 0);
 			break;
 		}
@@ -388,23 +414,89 @@ static void ddSchedulerTask(void *pvParameters) {
 		}
 
 		// Run task at the front of the list
-		// TODO - implement task notification for this, have each user task block on receiving the notification
-
+		xTaskNotifyGive(activeTasks->tHandle);
 	}
 }
 
 
-// TODO this is an abstraction of tasks that would be generated from createtask
+// TODO make tasks do something - we could make them print out beats and make a little rhythm out of it?
 static void userTask1(void *pvParameters) {
-	// do nothing for specified time period
+	// Block indefinitely until notified by scheduler
+	ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
+	// Turn off other LEDS
+	turnOffLEDs();
+	// Turn on amber LED
+	STM_EVAL_LEDOn(0);
+
+	// 'busy work' for 20ms
+	usleep(20000);
+
 	printf("userTask1 completed.\n");
+
+	// Request scheduler to delete this task from active task list
+	TaskHandle_t tHandle = xTaskGetHandle("Task_1");
+	ddTDelete(tHandle);
 }
 static void userTask2(void *pvParameters) {
+	// Block indefinitely until notified by scheduler
+	ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
+	// Turn off other LEDS
+	turnOffLEDs();
+	// Turn on green LED
+	STM_EVAL_LEDOn(1);
+
+	// 'busy work' for 20ms
+	usleep(20000);
+
 	printf("userTask2 completed.\n");
+
+	// Request scheduler to delete this task from active task list
+	TaskHandle_t tHandle = xTaskGetHandle("Task_2");
+	ddTDelete(tHandle);
 }
 static void userTask3(void *pvParameters) {
+	// Block indefinitely until notified by scheduler
+	ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
+	// Turn off other LEDS
+	turnOffLEDs();
+	// Turn on blue LED
+	STM_EVAL_LEDOn(3);
+
+	// 'busy work' for 20ms
+	usleep(20000);
+
 	printf("userTask3 completed.\n");
+
+	// Request scheduler to delete this task from active task list
+	TaskHandle_t tHandle = xTaskGetHandle("Task_3");
+	ddTDelete(tHandle);
 }
+
+
+/* The aperiodic task triggered by user button on board */
+static void aperiodicTask(void *pvParameters) {
+	// Block indefinitely until notified by scheduler
+	ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
+	// Turn off other LEDS
+	turnOffLEDs();
+	// Turn on red LED
+	STM_EVAL_LEDOn(2);
+
+	// 'busy work' for 20ms
+	usleep(20000);
+
+	printf("aperiodic task completed.\n");
+
+	// Request scheduler to delete this task from active task list
+	TaskHandle_t tHandle = xTaskGetHandle("aperiodic_task");
+	ddTDelete(tHandle);
+	// TODO maybe just print out the active and overdue lists, plus processor utilization? DROP THE LISTS
+}
+
 
 /* Task generators generate user tasks at specified intervals */
 static void ddTask1GeneratorTask(void *pvParameters) {
@@ -467,8 +559,28 @@ static void monitorTask(void *pvParameters) {
 		totalTime = clock()/CLOCKS_PER_SEC*1000;
 		utilization =  totalTime - runningTime / totalTime;
 	}
+}
 
+/* Interrupt handler */
 
+/* Creates associated aperiodic task from button interrupt */
+static void EXTI0_IRQHandler() {
+	// TODO delete
+	printf("In interrupt handler");
+	// Ensure interrupt bit is set
+	if(EXTI_GetITStatus(EXTI_Line0) != RESET) {
+		// create TaskParams
+		TaskParams aperiodicTaskParams;
+		aperiodicTaskParams.taskName = "aperiodic_task";
+		aperiodicTaskParams.taskCode = aperiodicTask;
+		aperiodicTaskParams.relativeDeadline = 50;
+
+		// clear interrupt flag
+		EXTI_ClearITPendingBit(EXTI_Line0);
+
+		// call ddTCreate function
+		ddTCreate(aperiodicTaskParams);
+	}
 }
 
 /* ------------------------------------------- MAIN ------------------------------------------------------ */
@@ -476,6 +588,8 @@ static void monitorTask(void *pvParameters) {
 int main() {
 	// Initialize queues
 	createQueues();
+	// Setup lights, user input on board
+	initBoard();
 
 	// init total running time counter
 	runningTime = 0;
@@ -486,6 +600,9 @@ int main() {
 	xTaskCreate(ddTask2GeneratorTask, "TASK_GENERATOR_TASK", configMINIMAL_STACK_SIZE, NULL, 2, NULL);
 	xTaskCreate(ddTask3GeneratorTask, "TASK_GENERATOR_TASK", configMINIMAL_STACK_SIZE, NULL, 2, NULL);
 	xTaskCreate(monitorTask, "MONITOR_TASK", configMINIMAL_STACK_SIZE, NULL, 1, NULL);
+
+	// TODO aperiodic task trigger?
+
 
 	/* Start the tasks running. */
 	vTaskStartScheduler();
