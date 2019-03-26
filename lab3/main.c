@@ -67,7 +67,7 @@
 #include "../FreeRTOS_Source/include/semphr.h"
 #include "../FreeRTOS_Source/include/task.h"
 #include "../FreeRTOS_Source/include/timers.h"
-
+#include "../FreeRTOS_Source/portable/MemMang/heap_4.c"
 
 /*----------------------------- DEFINITIONS ------------------------------*/
 // TODO figure out how long these need to be
@@ -202,9 +202,12 @@ static void ddTCreate(struct TaskParams taskParams) {
 
 	// wait for response from scheduler task
 	struct TaskListItem response;
+
+	// TODO this queue is never receiving
 	xQueueReceive(xSchedulerResponseQueue, &response, portMAX_DELAY);
+
 	// destroy SchedulerResponseQueue
-	printf("deleting queue\n");
+	printf("deleting create queue\n");
 	vQueueUnregisterQueue(xSchedulerResponseQueue);
 	vQueueDelete(xSchedulerResponseQueue);
 	printf("task create outta here\n");
@@ -239,9 +242,10 @@ static void ddTDelete(TaskHandle_t taskToDelete) {
 	struct TaskListItem response;
 	xQueueReceive(xSchedulerResponseQueue, &response, portMAX_DELAY);
 	// destroy SchedulerResponseQueue
-	printf("deleting queue\n");
+	printf("deleting delete queue\n");
 	vQueueUnregisterQueue(xSchedulerResponseQueue);
 	vQueueDelete(xSchedulerResponseQueue);
+
 	printf("leaving task delete\n");
 	return;
 }
@@ -459,8 +463,9 @@ static void ddSchedulerTask(void *pvParameters) {
 		TickType_t currentTimeTicks = xTaskGetTickCount();
 		while(activeTasks != NULL && activeTasks->deadline < currentTimeTicks) {
 			printf("overdue task detected\n");
+			// TODO fix
 			//remove task from active list and add to overdue list
-			overdueTasks = addTaskToEndOfList(overdueTasks, activeTasks);
+//			overdueTasks = addTaskToEndOfList(overdueTasks, activeTasks);
 			activeTasks = activeTasks->nextCell;
 			activeTasks->previousCell = NULL;
 		}
@@ -495,6 +500,8 @@ static void userTask1(void *pvParameters) {
 	const char* taskName = "Task_1";
 	TaskHandle_t tHandle = xTaskGetHandle(taskName);
 	ddTDelete(tHandle);
+	vTaskDelete(NULL);
+
 }
 
 static void userTask2(void *pvParameters) {
@@ -515,6 +522,8 @@ static void userTask2(void *pvParameters) {
 	// Request scheduler to delete this task from active task list
 	TaskHandle_t tHandle = xTaskGetHandle("Task_2");
 	ddTDelete(tHandle);
+	vTaskDelete(NULL);
+
 }
 
 static void userTask3(void *pvParameters) {
@@ -533,6 +542,8 @@ static void userTask3(void *pvParameters) {
 	// Request scheduler to delete this task from active task list
 	TaskHandle_t tHandle = xTaskGetHandle("Task_3");
 	ddTDelete(tHandle);
+	vTaskDelete(NULL);
+
 }
 
 
