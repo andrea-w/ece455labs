@@ -72,9 +72,9 @@
 /*----------------------------- DEFINITIONS ------------------------------*/
 // TODO figure out how long these need to be
 #define TASK_QUEUE_LENGTH	8
-#define TASK1_PERIOD_MS		1000
-#define TASK2_PERIOD_MS		700
-#define	TASK3_PERIOD_MS		1500
+#define TASK1_PERIOD_MS		5000
+#define TASK2_PERIOD_MS		1500
+#define	TASK3_PERIOD_MS		3000
 #define TASK1_PERIOD_TICKS	pdMS_TO_TICKS(TASK1_PERIOD_MS)
 #define TASK2_PERIOD_TICKS	pdMS_TO_TICKS(TASK2_PERIOD_MS)
 #define TASK3_PERIOD_TICKS	pdMS_TO_TICKS(TASK3_PERIOD_MS)
@@ -171,10 +171,11 @@ static void turnOffLEDs() {
  * and adds the task to the queue of active tasks to be scheduled
  */
 static void ddTCreate(struct TaskParams taskParams) {
+	static xQueueHandle xSchedulerResponseQueue = NULL;
 	// open a SchedulerResponseQueue to scheduler task
-	xQueueHandle xSchedulerResponseQueue = xQueueCreate(1, sizeof(struct TaskListItem));
+	xSchedulerResponseQueue = xQueueCreate(1, sizeof(struct SchedulerMessage));
 	// add the queue to the registry
-	vQueueAddToRegistry(xSchedulerResponseQueue, "SchedulerResponseQueue");
+	vQueueAddToRegistry(xSchedulerResponseQueue, "SchedulerCreateResponseQueue");
 
 	TaskHandle_t thandle = NULL;
 
@@ -195,7 +196,7 @@ static void ddTCreate(struct TaskParams taskParams) {
 	xTaskCreate(taskParams.taskCode, taskParams.taskName, configMINIMAL_STACK_SIZE, NULL, 1, &newTask.tHandle);
 
 	// create CreateTaskMessage
-	struct SchedulerMessage createMessage = {xSchedulerMessageQueue, newTask};
+	struct SchedulerMessage createMessage = {xSchedulerResponseQueue, newTask};
 
 	// put task on Queue (w createMessage)
 	xQueueSend(xSchedulerMessageQueue, &createMessage, 0);
@@ -222,9 +223,9 @@ static void ddTDelete(TaskHandle_t taskToDelete) {
 	printf("deleting task\n");
 	static xQueueHandle xSchedulerResponseQueue = NULL;
 	// open a SchedulerResponseQueue to scheduler task
-	xSchedulerResponseQueue = xQueueCreate(1, sizeof(float));
+	xSchedulerResponseQueue = xQueueCreate(1, sizeof(struct SchedulerMessage));
 	// add the queue to the registry
-	vQueueAddToRegistry(xSchedulerResponseQueue, "SchedulerResponseQueue");
+	vQueueAddToRegistry(xSchedulerResponseQueue, "SchedulerDeleteResponseQueue");
 
 	// initialize new TaskListItem
 	struct TaskListItem newTask;
@@ -301,8 +302,8 @@ static struct TaskListItem* ddReturnOverdueList() {
 /*
  * Returns a pointer to the first item in the list, or NULL if list is empty
  */
-static struct TaskListItem* getBeginningOfList(TaskListItem* currentTask) {
-	while(currentTask!= NULL && currentTask->previousCell != NULL) {
+static struct TaskListItem* getBeginningOfList(struct TaskListItem* currentTask) {
+	while(currentTask != NULL && currentTask->previousCell != NULL) {
 		currentTask = currentTask->previousCell;
 	}
 	return currentTask;
@@ -311,110 +312,127 @@ static struct TaskListItem* getBeginningOfList(TaskListItem* currentTask) {
 /*
  * Adds the task list item to the end of the list; returns a pointer to the beginning of the modified list
  */
-static struct TaskListItem* addTaskToEndOfList(TaskListItem* listPointer, TaskListItem* taskToAdd) {
-	// Make sure new task isn't pointing to anything
-	taskToAdd->nextCell = NULL;
+static struct TaskListItem* addTaskToEndOfList(struct TaskListItem* beginningOfList, struct TaskListItem* taskToAdd) {
+	struct TaskListItem* currentTask = beginningOfList;
 
 	// If list is empty, new task is head of list
-	if(listPointer == NULL) {
-		listPointer = taskToAdd;
+	if(currentTask == NULL) {
+		currentTask = malloc(sizeof(struct TaskListItem));
+		if(currentTask == NULL) {
+			printf("Houston we have a problem\n");
+			return NULL;
+		}
+		currentTask->creationTime = taskToAdd->creationTime;
+		currentTask->deadline = taskToAdd->deadline;
+		currentTask->tHandle = taskToAdd->tHandle;
+		currentTask->nextCell = NULL;
+		currentTask->previousCell = NULL;
 	} else {
 		// else find the end of the list
-		while(listPointer->nextCell != NULL) {
-			listPointer->nextCell = listPointer;
+		while(currentTask->nextCell != NULL) {
+			currentTask = currentTask->nextCell;
 		}
 
-		listPointer->nextCell = taskToAdd;
+		// create the new item at the end of the list
+		currentTask->nextCell = malloc(sizeof(struct TaskListItem));
+		currentTask->nextCell->creationTime = taskToAdd->creationTime;
+		currentTask->nextCell->deadline = taskToAdd->deadline;
+		currentTask->nextCell->tHandle = taskToAdd->tHandle;
+		currentTask->nextCell->nextCell = NULL;
+		currentTask->nextCell->previousCell = currentTask;
 	}
-	return getBeginningOfList(listPointer);
+
+	return getBeginningOfList(currentTask);
 }
 
 /*
  * Deletes the specified task from the list of active tasks by iterating
  * through the list of active tasks and comparing task handles
  */
-// TODO maaaaaaaaybe there should be error handling here if the taskHandle isn't found?????
-static struct TaskListItem* deleteTaskByHandle(TaskListItem* activeTasks, TaskHandle_t taskHandle) {
-	while (activeTasks != NULL) {
-		if (activeTasks->tHandle == taskHandle) {
-			TaskListItem* prev = activeTasks->previousCell;
-			TaskListItem* next = activeTasks->nextCell;
+static struct TaskListItem* deleteTaskByHandle(struct TaskListItem* activeTasks, TaskHandle_t taskHandle) {
+	struct TaskListItem* currentTask = activeTasks;
+	struct TaskListItem* beginningOfList = NULL;
+
+	while (currentTask != NULL) {
+		if (currentTask->tHandle == taskHandle) {
+			TaskListItem* prev = currentTask->previousCell;
+			TaskListItem* next = currentTask->nextCell;
 			if (next != NULL) {
 				next->previousCell = prev;
+				beginningOfList = getBeginningOfList(next);
 			}
 
+			// This will be infrequent, we will almost always be deleting from head of list
 			if (prev != NULL) {
 				prev->nextCell = next;
-
+				beginningOfList = getBeginningOfList(prev);
 			}
 
+			// Free memory associated with item
+			free(currentTask);
+
 			// Return pointer to front of list
-			return getBeginningOfList(activeTasks);
+			return beginningOfList;
 		}
 		else {
-			activeTasks = activeTasks->nextCell;
+			currentTask = currentTask->nextCell;
 		}
 	}
 
 	// If list is empty, or if task handle isn't in list, return beginning of list (or NULL)
-	return getBeginningOfList(activeTasks);
+	return getBeginningOfList(currentTask);
 }
 
-static struct TaskListItem* sortTasksEDF(TaskListItem* activeTasks) {
+static struct TaskListItem* sortTasksEDF(struct TaskListItem* activeTasks) {
 	// Task list will always be very short for this application so efficiency doesn't much matter, using bubble sort
 	int swapFlag = 0;
 	uint32_t deadline1;
 	uint32_t deadline2;
+	struct TaskListItem* currentTask = activeTasks;
 
 	// Check list for needed swaps, iterate through list repeatedly until no swaps are made
 	do {
 		swapFlag = 0;
-		while(activeTasks != NULL && activeTasks->nextCell != NULL) {
-			deadline1 = activeTasks->deadline;
-			deadline2 = activeTasks->nextCell->deadline;
+		while(currentTask != NULL && currentTask->nextCell != NULL) {
+			deadline1 = currentTask->deadline;
+			deadline2 = currentTask->nextCell->deadline;
 			// if deadline of next task is closer than current tasks, swap tasks
 			if(deadline2 < deadline1) {
 				swapFlag = 1;
-				TaskListItem* previous = activeTasks->previousCell;
-				TaskListItem* next = activeTasks->nextCell;
+				TaskListItem* previous = currentTask->previousCell;
+				TaskListItem* next = currentTask->nextCell;
 
 				// Previous task points to next task
-				previous->nextCell = activeTasks->nextCell;
+				previous->nextCell = currentTask->nextCell;
 				next->previousCell = previous;
-				next->nextCell = activeTasks;
+				next->nextCell = currentTask;
 
 				// active task between next task and task after that
-				activeTasks->previousCell = next;
-				activeTasks->nextCell = next->nextCell;
-				next->nextCell->previousCell = activeTasks;
+				currentTask->previousCell = next;
+				currentTask->nextCell = next->nextCell;
+				next->nextCell->previousCell = currentTask;
 			}
 
 			// Move on to next pair of tasks in list
-			activeTasks = activeTasks->nextCell;
+			currentTask = currentTask->nextCell;
 		}
 	} while(swapFlag);
 
-	return activeTasks;
+	return currentTask;
 }
 
 /*-------------------------------------- TASKS ----------------------------------*/
 
 static void ddSchedulerTask(void *pvParameters) {
-	printf("in scheduler task pre loop\n");
-
-	// TODO  should this be global???? Danger of passing pointer to invalid data if not global
 	struct TaskListItem* activeTasks = NULL;
 	struct TaskListItem* overdueTasks = NULL;
 	struct SchedulerMessage receivedMessage;
 
 	//loop
 	for(;;) {
-		printf("in scheduler task loop\n");
-
 		// block on xSchedulerMessageQueue
 		xQueueReceive(xSchedulerMessageQueue, &receivedMessage, portMAX_DELAY);
 
-		printf("scheduler unblocked\n");
 		// parse type of message
 		struct TaskListItem taskListItem = receivedMessage.taskListItem;
 		struct TaskListItem responseMessage = {};
@@ -501,7 +519,6 @@ static void userTask1(void *pvParameters) {
 	TaskHandle_t tHandle = xTaskGetHandle(taskName);
 	ddTDelete(tHandle);
 	vTaskDelete(NULL);
-
 }
 
 static void userTask2(void *pvParameters) {
@@ -582,7 +599,7 @@ static void ddTask1GeneratorTask(void *pvParameters) {
 		task1Params.taskCode = userTask1;
 		task1Params.relativeDeadline = TASK1_PERIOD_TICKS;
 
-		printf("generating task 1");
+		printf("generating task 1\n");
 
 		// call ddTCreate function
 		ddTCreate(task1Params);
@@ -602,7 +619,7 @@ static void ddTask2GeneratorTask(void *pvParameters) {
 		task2Params.taskCode = userTask2;
 		task2Params.relativeDeadline = TASK2_PERIOD_TICKS;
 
-		printf("generating task 2");
+		printf("generating task 2\n");
 
 		// call ddTCreate function
 		ddTCreate(task2Params);
@@ -621,7 +638,7 @@ static void ddTask3GeneratorTask(void *pvParameters) {
 		task3Params.taskCode = userTask3;
 		task3Params.relativeDeadline = TASK3_PERIOD_TICKS;
 
-		printf("generating task 3");
+		printf("generating task 3\n");
 
 		// call ddTCreate function
 		ddTCreate(task3Params);
@@ -629,6 +646,7 @@ static void ddTask3GeneratorTask(void *pvParameters) {
 }
 
 static void monitorTask(void *pvParameters) {
+	printf("monitor task\n");
 	// lowest priority!
 	// records own running time
 	// records utilization (total running time - own running time / total running time)
@@ -679,10 +697,10 @@ int main() {
 
 	// Create tasks
 	xTaskCreate(ddSchedulerTask, "DD_SCHEDULER_TASK", configMINIMAL_STACK_SIZE, NULL, configMAX_PRIORITIES-1, NULL);
-	xTaskCreate(ddTask1GeneratorTask, "TASK_GENERATOR_TASK", configMINIMAL_STACK_SIZE, NULL, 2, NULL);
-	xTaskCreate(ddTask2GeneratorTask, "TASK_GENERATOR_TASK", configMINIMAL_STACK_SIZE, NULL, 2, NULL);
-	xTaskCreate(ddTask3GeneratorTask, "TASK_GENERATOR_TASK", configMINIMAL_STACK_SIZE, NULL, 2, NULL);
-	xTaskCreate(monitorTask, "MONITOR_TASK", configMINIMAL_STACK_SIZE, NULL, 1, NULL);
+	xTaskCreate(ddTask1GeneratorTask, "TASK_GENERATOR_TASK", configMINIMAL_STACK_SIZE, NULL, 3, NULL);
+	xTaskCreate(ddTask2GeneratorTask, "TASK_GENERATOR_TASK", configMINIMAL_STACK_SIZE, NULL, 3, NULL);
+	xTaskCreate(ddTask3GeneratorTask, "TASK_GENERATOR_TASK", configMINIMAL_STACK_SIZE, NULL, 3, NULL);
+	xTaskCreate(monitorTask, "MONITOR_TASK", configMINIMAL_STACK_SIZE, NULL, 2, NULL);
 
 	/* Start the tasks running. */
 	vTaskStartScheduler();
