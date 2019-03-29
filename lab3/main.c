@@ -317,7 +317,7 @@ static struct TaskListItem* addTaskToEndOfList(struct TaskListItem* beginningOfL
 
 	// If list is empty, new task is head of list
 	if(currentTask == NULL) {
-		currentTask = malloc(sizeof(struct TaskListItem));
+		currentTask = pvPortMalloc(sizeof(struct TaskListItem));
 		if(currentTask == NULL) {
 			printf("Houston we have a problem\n");
 			return NULL;
@@ -334,7 +334,7 @@ static struct TaskListItem* addTaskToEndOfList(struct TaskListItem* beginningOfL
 		}
 
 		// create the new item at the end of the list
-		currentTask->nextCell = malloc(sizeof(struct TaskListItem));
+		currentTask->nextCell = pvPortMalloc(sizeof(struct TaskListItem));
 		currentTask->nextCell->creationTime = taskToAdd->creationTime;
 		currentTask->nextCell->deadline = taskToAdd->deadline;
 		currentTask->nextCell->tHandle = taskToAdd->tHandle;
@@ -369,7 +369,7 @@ static struct TaskListItem* deleteTaskByHandle(struct TaskListItem* activeTasks,
 			}
 
 			// Free memory associated with item
-			free(currentTask);
+			vPortFree(currentTask);
 
 			// Return pointer to front of list
 			return beginningOfList;
@@ -403,14 +403,18 @@ static struct TaskListItem* sortTasksEDF(struct TaskListItem* activeTasks) {
 				TaskListItem* next = currentTask->nextCell;
 
 				// Previous task points to next task
-				previous->nextCell = currentTask->nextCell;
+				if(previous != NULL) {
+					previous->nextCell = next;
+				}
 				next->previousCell = previous;
-				next->nextCell = currentTask;
 
-				// active task between next task and task after that
-				currentTask->previousCell = next;
 				currentTask->nextCell = next->nextCell;
-				next->nextCell->previousCell = currentTask;
+				if(next->nextCell != NULL) {
+					next->nextCell->previousCell = currentTask;
+				}
+
+				next->nextCell = currentTask;
+				currentTask->previousCell = next;
 			}
 
 			// Move on to next pair of tasks in list
