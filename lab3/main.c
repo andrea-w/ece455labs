@@ -70,17 +70,19 @@
 #include "../FreeRTOS_Source/portable/MemMang/heap_4.c"
 
 /*----------------------------- DEFINITIONS ------------------------------*/
-// TODO figure out how long these need to be
-#define TASK_QUEUE_LENGTH	8
-#define TASK1_PERIOD_MS		5000
-#define TASK2_PERIOD_MS		1500
-#define	TASK3_PERIOD_MS		3000
-#define TASK1_PERIOD_TICKS	pdMS_TO_TICKS(TASK1_PERIOD_MS)
-#define TASK2_PERIOD_TICKS	pdMS_TO_TICKS(TASK2_PERIOD_MS)
-#define TASK3_PERIOD_TICKS	pdMS_TO_TICKS(TASK3_PERIOD_MS)
-#define TASK1_QUEUE_SEND_PERIOD_MS	(TASK1_PERIOD_MS / portTICK_RATE_MS)
-#define TASK2_QUEUE_SEND_PERIOD_MS	(TASK2_PERIOD_MS / portTICK_RATE_MS)
-#define TASK3_QUEUE_SEND_PERIOD_MS	(TASK3_PERIOD_MS / portTICK_RATE_MS)
+#define TASK_QUEUE_LENGTH				8
+#define TASK1_PERIOD_MS					500
+#define TASK2_PERIOD_MS					500
+#define	TASK3_PERIOD_MS					750
+#define TASK1_PERIOD_TICKS				pdMS_TO_TICKS(TASK1_PERIOD_MS)
+#define TASK2_PERIOD_TICKS				pdMS_TO_TICKS(TASK2_PERIOD_MS)
+#define TASK3_PERIOD_TICKS				pdMS_TO_TICKS(TASK3_PERIOD_MS)
+#define TASK1_QUEUE_SEND_PERIOD_MS		TASK1_PERIOD_MS * portTICK_RATE_MS
+#define TASK2_QUEUE_SEND_PERIOD_MS		TASK2_PERIOD_MS * portTICK_RATE_MS
+#define TASK3_QUEUE_SEND_PERIOD_MS		TASK3_PERIOD_MS * portTICK_RATE_MS
+#define TASK1_EXECUTION_MS				95
+#define TASK2_EXECUTION_MS				150
+#define TASK3_EXECUTION_MS				250
 #define CREATION_MESSAGE				1
 #define DELETION_MESSAGE				2
 #define ACTIVE_REQUEST					3
@@ -122,7 +124,7 @@ static xSemaphoreHandle xEventSemaphore = NULL;
 uint32_t runningTime;
 
 /*
- * Processor utilization rate as calculated by MonitorTas
+ * Processor utilization rate as calculated by MonitorTask
  */
 float utilization = 0.0;
 
@@ -170,7 +172,7 @@ static void turnOffLEDs() {
  * Takes taskHandle as parameter (sent by task creation callback function)
  * and adds the task to the queue of active tasks to be scheduled
  */
-static void ddTCreate(struct TaskParams taskParams) {
+static void ddTCreate(struct TaskParams* taskParams) {
 	static xQueueHandle xSchedulerResponseQueue = NULL;
 	// open a SchedulerResponseQueue to scheduler task
 	xSchedulerResponseQueue = xQueueCreate(1, sizeof(struct SchedulerMessage));
@@ -181,10 +183,9 @@ static void ddTCreate(struct TaskParams taskParams) {
 
 	// initialize new TaskListItem
 	struct TaskListItem newTask;
-	newTask.creationTime = clock() / (CLOCKS_PER_SEC * 1000); // now in units of ms
 	newTask.creationTime = xTaskGetTickCount();
 	newTask.taskType = CREATION_MESSAGE;
-	newTask.deadline = newTask.creationTime + taskParams.relativeDeadline;
+	newTask.deadline = newTask.creationTime + taskParams->relativeDeadline;
 	if (newTask.deadline < newTask.creationTime) {
 		printf("int overflow on new tasklistitem\n");
 	}
@@ -193,7 +194,7 @@ static void ddTCreate(struct TaskParams taskParams) {
 	newTask.tHandle = thandle;
 
 	// create the task
-	xTaskCreate(taskParams.taskCode, taskParams.taskName, configMINIMAL_STACK_SIZE, NULL, 1, &newTask.tHandle);
+	xTaskCreate(taskParams->taskCode, taskParams->taskName, configMINIMAL_STACK_SIZE, NULL, 1, &newTask.tHandle);
 
 	// create CreateTaskMessage
 	struct SchedulerMessage createMessage = {xSchedulerResponseQueue, newTask};
@@ -204,7 +205,6 @@ static void ddTCreate(struct TaskParams taskParams) {
 	// wait for response from scheduler task
 	struct TaskListItem response;
 
-	// TODO this queue is never receiving
 	xQueueReceive(xSchedulerResponseQueue, &response, portMAX_DELAY);
 
 	// destroy SchedulerResponseQueue
@@ -515,6 +515,9 @@ static void userTask1(void *pvParameters) {
 	turnOffLEDs();
 	// Turn on amber LED
 	STM_EVAL_LEDOn(0);
+	// delay for defined execution time
+	TickType_t xDelay = TASK1_EXECUTION_MS / portTICK_PERIOD_MS;
+	vTaskDelay(xDelay);
 
 	printf("userTask1 completed.\n");
 
@@ -537,6 +540,9 @@ static void userTask2(void *pvParameters) {
 	turnOffLEDs();
 	// Turn on green LED
 	STM_EVAL_LEDOn(1);
+	// delay for defined execution time
+	TickType_t xDelay = TASK2_EXECUTION_MS / portTICK_PERIOD_MS;
+	vTaskDelay(xDelay);
 
 	printf("userTask2 completed.\n");
 
@@ -557,8 +563,13 @@ static void userTask3(void *pvParameters) {
 	turnOffLEDs();
 	// Turn on blue LED
 	STM_EVAL_LEDOn(3);
+	// delay for defined execution time
+	TickType_t xDelay = TASK3_EXECUTION_MS / portTICK_PERIOD_MS;
+	vTaskDelay(xDelay);
 
 	printf("userTask3 completed.\n");
+
+	turnOffLEDs();
 
 	// Request scheduler to delete this task from active task list
 	TaskHandle_t tHandle = xTaskGetHandle("Task_3");
@@ -567,7 +578,7 @@ static void userTask3(void *pvParameters) {
 
 }
 
-
+// TODO fix this. Right now it gets stuck in an infinite loop
 /* The aperiodic task triggered by user button on board */
 static void aperiodicTask(void *pvParameters) {
 	printf("in aperiodic task\n");
@@ -606,7 +617,7 @@ static void ddTask1GeneratorTask(void *pvParameters) {
 		printf("generating task 1\n");
 
 		// call ddTCreate function
-		ddTCreate(task1Params);
+		ddTCreate(&task1Params);
 	}
 }
 
@@ -626,7 +637,7 @@ static void ddTask2GeneratorTask(void *pvParameters) {
 		printf("generating task 2\n");
 
 		// call ddTCreate function
-		ddTCreate(task2Params);
+		ddTCreate(&task2Params);
 	}
 }
 
@@ -645,7 +656,7 @@ static void ddTask3GeneratorTask(void *pvParameters) {
 		printf("generating task 3\n");
 
 		// call ddTCreate function
-		ddTCreate(task3Params);
+		ddTCreate(&task3Params);
 	}
 }
 
@@ -661,7 +672,7 @@ static void monitorTask(void *pvParameters) {
 		// delay for 1 ms
 		vTaskDelayUntil(&xNextWakeTime, 1);
 		runningTime++;
-		totalTime = clock()/CLOCKS_PER_SEC*1000;
+		totalTime = xNextWakeTime / portTICK_PERIOD_MS;
 		utilization =  totalTime - runningTime / totalTime;
 	}
 }
@@ -684,7 +695,7 @@ static void EXTI0_IRQHandler() {
 		EXTI_ClearITPendingBit(EXTI_Line0);
 
 		// call ddTCreate function
-		ddTCreate(aperiodicTaskParams);
+		ddTCreate(&aperiodicTaskParams);
 	}
 }
 
