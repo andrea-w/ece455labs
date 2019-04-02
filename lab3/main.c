@@ -758,12 +758,12 @@ static void monitorTask(void *pvParameters) {
 		// TODO - delete
 		printf("monitor task\n");
 		// calculate processor utilization
-		utilization = (float) runTimeStats.timeExecutingTasks / runTimeStats.totalRunTime;
+		utilization = 100 * runTimeStats.timeExecutingTasks / runTimeStats.totalRunTime;
 		// calculate system overhead
-		float overhead = runTimeStats.timeInScheduler / (float) runTimeStats.totalRunTime;
-		// TODO - floats aren't printing ???
-		printf("System overhead: %u microseconds in scheduler / %u microseconds overall = %6.3f\n", runTimeStats.timeInScheduler, runTimeStats.totalRunTime, overhead);
-		printf("Processor utilization: %6.3f\n", utilization);
+		float overhead = 100 * runTimeStats.timeInScheduler / (float) runTimeStats.totalRunTime;
+		// floats aren't printing so report as integer percentages
+		printf("System overhead: %u microseconds in scheduler / %u microseconds overall = %u percent\n", runTimeStats.timeInScheduler, runTimeStats.totalRunTime, overhead);
+		printf("Processor utilization: %u percent\n", utilization);
 	}
 }
 
