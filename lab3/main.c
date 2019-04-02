@@ -114,6 +114,10 @@ typedef struct SchedulerMessage{
 	TaskListItem taskListItem;
 } SchedulerMessage;
 
+typedef struct RunTimeStats {
+	
+}
+
 /*------------------------------ GLOBAL VARIABLES -----------------------------*/
 
 /* Queue used to communicate between create/delete tasks and scheduler tasks */
@@ -442,7 +446,9 @@ static struct TaskListItem* sortTasksEDF(struct TaskListItem* activeTasks) {
 static void ddSchedulerTask(void *pvParameters) {
 	struct TaskListItem* activeTasks = NULL;
 	struct TaskListItem* overdueTasks = NULL;
+	struct TaskListItem* aperiodicTasks = NULL;
 	struct SchedulerMessage receivedMessage;
+	int aperiodicTaskCounter = 0;
 
 	//loop
 	for(;;) {
@@ -455,12 +461,26 @@ static void ddSchedulerTask(void *pvParameters) {
 		switch(taskListItem.taskType) {
 			case CREATION_MESSAGE:
 				// Add task to active task list, then respond to caller
-				activeTasks = addTaskToEndOfList(activeTasks, &taskListItem);
+				if(taskListItem.deadline != 0) {
+					activeTasks = addTaskToEndOfList(activeTasks, &taskListItem);
+				} else {
+					// This is an aperiodic task. Check how many we have, reject if too many
+					if (aperiodicTaskCounter > 2) {
+						printf("Too many aperiodic tasks! Not scheduled.\n");
+					} else {
+						aperiodicTaskCounter++;
+						aperiodicTasks = addTaskToEndOfList(aperiodicTasks, &taskListItem);
+					}
+				}
 				xQueueSend(receivedMessage.responseQueueHandle, &responseMessage, 0);
 				break;
 			case DELETION_MESSAGE:
-				// Delete task from active task list, then respond to caller
-				activeTasks = deleteTaskByHandle(activeTasks, taskListItem.tHandle);
+				// Delete task from appropriate task list, then respond to caller
+				if(taskListItem.deadline != 0) {
+					activeTasks = deleteTaskByHandle(activeTasks, taskListItem.tHandle);
+				} else {
+					aperiodicTasks = deleteTaskByHandle(aperiodicTasks, taskListItem.tHandle);
+				}
 				xQueueSend(receivedMessage.responseQueueHandle, &responseMessage, 0);
 				break;
 			case ACTIVE_REQUEST:
@@ -484,16 +504,20 @@ static void ddSchedulerTask(void *pvParameters) {
 		TickType_t currentTimeTicks = xTaskGetTickCount();
 		while(activeTasks != NULL && activeTasks->deadline < currentTimeTicks) {
 			printf("overdue task detected\n");
-			// TODO fix
 			//remove task from active list and add to overdue list
-//			overdueTasks = addTaskToEndOfList(overdueTasks, activeTasks);
+			overdueTasks = addTaskToEndOfList(overdueTasks, activeTasks);
 			activeTasks = activeTasks->nextCell;
 			activeTasks->previousCell = NULL;
 		}
 
-		// Run task at the front of the list, if list isn't empty
+		// Run periodic task at the front of the list, if list isn't empty
 		if(activeTasks != NULL) {
 			xTaskNotifyGive(activeTasks->tHandle);
+		} else {
+			// If there are no periodic tasks to run, try an aperiodic task
+			if(aperiodicTasks != NULL) {
+				xTaskNotifyGive(aperiodicTasks->tHandle);
+			}
 		}
 	}
 
@@ -538,7 +562,6 @@ static void userTask2(void *pvParameters) {
 	TaskHandle_t tHandle = xTaskGetHandle("Task_2");
 	ddTDelete(tHandle);
 	vTaskDelete(NULL);
-
 }
 
 static void userTask3(void *pvParameters) {
@@ -559,7 +582,6 @@ static void userTask3(void *pvParameters) {
 	TaskHandle_t tHandle = xTaskGetHandle("Task_3");
 	ddTDelete(tHandle);
 	vTaskDelete(NULL);
-
 }
 
 static void printStats() {
@@ -583,7 +605,6 @@ static void printStats() {
 	printf("\nTOTAL RUNTIME:\t%u\nUTILIZATION:\t%ul\n", ulTotalRunTime, utilization);
 }
 
-// TODO fix this. Right now it gets stuck in an infinite loop
 /* The aperiodic task triggered by user button on board */
 static void aperiodicTask(void *pvParameters) {
 	// TODO delete
@@ -619,7 +640,7 @@ static void ddAperiodicTaskGeneratorTask(void *pvParameters) {
 	struct TaskParams aperiodicTaskParams;
 	aperiodicTaskParams.taskName = "ap_task";
 	aperiodicTaskParams.taskCode = aperiodicTask;
-	aperiodicTaskParams.relativeDeadline = pdMS_TO_TICKS(100);
+	aperiodicTaskParams.relativeDeadline = 0;
 
 	for(;;) {
 		// Block indefinitely until notified by scheduler
@@ -637,7 +658,6 @@ static void ddTask1GeneratorTask(void *pvParameters) {
 	portTickType xNextWakeTime = xTaskGetTickCount();
 
 	for(;;) {
-
 		// on interval: (vTaskDelayUntil...)
 		vTaskDelayUntil(&xNextWakeTime, TASK1_QUEUE_SEND_PERIOD_MS);
 		// create TaskParams
@@ -653,7 +673,6 @@ static void ddTask2GeneratorTask(void *pvParameters) {
 	portTickType xNextWakeTime = xTaskGetTickCount();
 
 	for(;;) {
-
 		// delay for interval
 		vTaskDelayUntil(&xNextWakeTime, TASK2_QUEUE_SEND_PERIOD_MS);
 		// create TaskParams
@@ -683,7 +702,11 @@ static void ddTask3GeneratorTask(void *pvParameters) {
 static void monitorTask(void *pvParameters) {
 	/* TODO this task calculates processor utilization and system overhead */
 	printf("monitor task\n");
-	for(;;) {}
+	portTickType xNextWakeTime = xTaskGetTickCount();
+	for(;;) {
+		// TODO - delay for interval, allow idle task to work
+		vTaskDelayUntil(&xNextWakeTime, 100);
+	}
 //	printf("num tasks = %u\nallocating status array now\n", uxArraySize);
 //	pxTaskStatusArray = pvPortMalloc(uxArraySize * sizeof(TaskStatus_t));
 //	BaseType_t test = uxArraySize;
