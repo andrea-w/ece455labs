@@ -76,11 +76,11 @@
 
 #define TASK1_PERIOD_MS					500
 #define TASK2_PERIOD_MS					500
-#define	TASK3_PERIOD_MS					750
+#define	TASK3_PERIOD_MS					500
 
-#define TASK1_EXECUTION_MS				95
-#define TASK2_EXECUTION_MS				150
-#define TASK3_EXECUTION_MS				250
+#define TASK1_EXECUTION_MS				100
+#define TASK2_EXECUTION_MS				200
+#define TASK3_EXECUTION_MS				200
 
 #define TASK1_PERIOD_TICKS				pdMS_TO_TICKS(TASK1_PERIOD_MS)
 #define TASK2_PERIOD_TICKS				pdMS_TO_TICKS(TASK2_PERIOD_MS)
@@ -132,11 +132,6 @@ static xQueueHandle xSchedulerMessageQueue = NULL;
  * function and the event semaphore task.
  */
 static xSemaphoreHandle xEventSemaphore = NULL;
-
-/*
- * Processor utilization rate as calculated by MonitorTask
- */
-float utilization = 0.0;
 
 /* Aperiodic task generator task handle so interrupt task can call it */
 TaskHandle_t aperiodicGeneratorHandle;
@@ -212,6 +207,34 @@ static void turnOffLEDs() {
 	STM_EVAL_LEDOff(3);
 }
 
+static void printActiveTasks(struct TaskListItem* activeTasks) {
+	if (activeTasks == NULL) {
+		printf("No active tasks.\n");
+	}
+	else {
+		printf("Active Tasks:\n");
+
+		while (activeTasks->tHandle != NULL) {
+			printf("%s, %u\n",activeTasks->tHandle, activeTasks->deadline);
+			activeTasks = activeTasks->nextCell;
+		}
+	}
+}
+
+static void printOverdueTasks(struct TaskListItem* overdueTasks) {
+	if (overdueTasks == NULL) {
+		printf("No overdue tasks.\n");
+	}
+	else {
+		printf("Overdue Tasks:\n");
+
+		while (overdueTasks->tHandle != NULL) {
+			printf("%s, %u\n", overdueTasks->tHandle, overdueTasks->deadline);
+			overdueTasks = overdueTasks->nextCell;
+		}
+	}
+}
+
 
 /*
  * Takes taskHandle as parameter (sent by task creation callback function)
@@ -224,16 +247,23 @@ static void ddTCreate(struct TaskParams* taskParams) {
 	struct TaskListItem newTask;
 	newTask.creationTime = xTaskGetTickCount();
 	newTask.taskType = CREATION_MESSAGE;
-	newTask.deadline = newTask.creationTime + taskParams->relativeDeadline;
-	if (newTask.deadline < newTask.creationTime) {
-		printf("int overflow on new tasklistitem\n");
+	// if the task is aperiodic, it has no deadline
+	if (taskParams->relativeDeadline == 0) {
+		newTask.deadline = 0;
 	}
+	else {
+		newTask.deadline = newTask.creationTime + taskParams->relativeDeadline;
+		if (newTask.deadline < newTask.creationTime) {
+			printf("Deadline less than creation time in createTask - possible int overflow on new tasklistitem\n");
+		}
+	}
+
 	newTask.nextCell = NULL;
 	newTask.previousCell = NULL;
 	newTask.tHandle = thandle;
 
 	// create the task
-	xTaskCreate(taskParams->taskCode, taskParams->taskName, configMINIMAL_STACK_SIZE, NULL, 1, &newTask.tHandle);
+	xTaskCreate(taskParams->taskCode, taskParams->taskName, configMINIMAL_STACK_SIZE, NULL, 2, &newTask.tHandle);
 
 	// open a SchedulerResponseQueue to scheduler task
 	xQueueHandle xSchedulerResponseQueue = xQueueCreate(1, sizeof(struct TaskListItem));
@@ -292,6 +322,7 @@ static void ddTDelete(TaskHandle_t taskToDelete, const char* taskName) {
 /*
  * Gets a copy of the current list of active tasks.
  */
+// TODO - this returns garbage
 static struct TaskListItem* ddReturnActiveList() {
 	struct TaskListItem* activeTasks;
 	static xQueueHandle xSchedulerResponseQueue = NULL;
@@ -316,6 +347,7 @@ static struct TaskListItem* ddReturnActiveList() {
 /*
  * Gets a copy of the current list of overdue tasks.
  */
+// TODO - FIX. This returns garbage
 static struct TaskListItem* ddReturnOverdueList() {
 	struct TaskListItem* overdueTasks;
 	static xQueueHandle xSchedulerResponseQueue = NULL;
@@ -475,6 +507,9 @@ static void ddSchedulerTask(void *pvParameters) {
 	uint32_t taskStart = 0;
 	EventBits_t uxBits;
 
+	// clear timer before we start
+	TIM2->CNT = ((uint32_t)0x0);
+
 	//loop
 	for(;;) {
 		// block on xSchedulerMessageQueue
@@ -485,7 +520,6 @@ static void ddSchedulerTask(void *pvParameters) {
 
 		// record total exec time up to this point (in microseconds)
 		runTimeStats.totalRunTime = 1000 * xTaskGetTickCount() / portTICK_PERIOD_MS;
-		printf("total run time: %u\n", runTimeStats.totalRunTime);
 
 		// record time in task (if task flag has been set)
 		uxBits = xEventGroupGetBits(xTaskExecutedFlag);
@@ -562,7 +596,6 @@ static void ddSchedulerTask(void *pvParameters) {
 		// Record the time spent in the scheduler
 		// record starting time of scheduler
 		uint32_t schedulerEnd = TIM2->CNT;
-		printf("scheduler end: %u\n", schedulerEnd);
 		runTimeStats.timeInScheduler += (schedulerEnd - schedulerStart) * clockFreqGHz;
 
 		// Run periodic task at the front of the list, if list isn't empty
@@ -594,7 +627,11 @@ static void userTask1(void *pvParameters) {
 	// busywork for defined execution time
 	TickType_t xDelayTicks = TASK1_EXECUTION_MS / portTICK_PERIOD_MS;
 	TickType_t targetTimeTicks = xTaskGetTickCount() + xDelayTicks;
+
 	while(xTaskGetTickCount() < targetTimeTicks) { };
+
+	// Turn off other LEDS
+	turnOffLEDs();
 
 	// Request scheduler to delete this task from active task list
 	const char* taskName = "Task_1";
@@ -619,6 +656,9 @@ static void userTask2(void *pvParameters) {
 	TickType_t targetTimeTicks = xTaskGetTickCount() + xDelayTicks;
 	while(xTaskGetTickCount() < targetTimeTicks) { };
 
+	// Turn off other LEDS
+	turnOffLEDs();
+
 	// Request scheduler to delete this task from active task list
 	const char* taskName = "Task_2";
 	TaskHandle_t tHandle = xTaskGetHandle(taskName);
@@ -642,6 +682,9 @@ static void userTask3(void *pvParameters) {
 	TickType_t targetTimeTicks = xTaskGetTickCount() + xDelayTicks;
 	while(xTaskGetTickCount() < targetTimeTicks) { };
 
+	// Turn off other LEDS
+	turnOffLEDs();
+
 	// Request scheduler to delete this task from active task list
 	const char* taskName = "Task_3";
 	TaskHandle_t tHandle = xTaskGetHandle(taskName);
@@ -653,9 +696,6 @@ static void userTask3(void *pvParameters) {
 
 /* The aperiodic task triggered by user button on board */
 static void aperiodicTask(void *pvParameters) {
-	// TODO delete
-	printf("in aperiodic task\n");
-
 	// Block indefinitely until notified by scheduler
 	ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
@@ -664,18 +704,16 @@ static void aperiodicTask(void *pvParameters) {
 	// Turn on red LED
 	STM_EVAL_LEDOn(2);
 
-	// Print out the stats collected by the monitor task
-	// printStats();
-
 	int i = 0;
 	for (i = 0; i < 1000; i++) { }
-	 struct TaskListItem* activeTasks = ddReturnActiveList();
-	 struct TaskListItem* overdueTasks = ddReturnOverdueList();
-	 // TODO - print something better than this
-	 printf("Active tasks %u\n", activeTasks->taskType);
-	 printf("Overdue tasks %u\n", overdueTasks->taskType);
 
-	printf("aperiodic task completed.\n");
+	struct TaskListItem* activeTasks = ddReturnActiveList();
+	struct TaskListItem* overdueTasks = ddReturnOverdueList();
+	printActiveTasks(activeTasks);
+	printOverdueTasks(overdueTasks);
+
+	// Turn off other LEDS
+	turnOffLEDs();
 
 	// Request scheduler to delete this task from active task list
 	const char* taskName = "ap_task";
@@ -752,18 +790,20 @@ static void monitorTask(void *pvParameters) {
 	/* this task calculates processor utilization and system overhead */
 	printf("monitor task start\n");
 	portTickType xNextWakeTime = xTaskGetTickCount();
+	uint32_t utilization = 0;
 	for(;;) {
 		// TODO - figure out interval here delay for interval, allow idle task to work
 		vTaskDelayUntil(&xNextWakeTime, 1000);
 		// TODO - delete
 		printf("monitor task\n");
 		// calculate processor utilization
-		utilization = 100 * runTimeStats.timeExecutingTasks / runTimeStats.totalRunTime;
+		utilization = (uint32_t) (100 * runTimeStats.timeExecutingTasks / (float) runTimeStats.totalRunTime);
 		// calculate system overhead
-		float overhead = 100 * runTimeStats.timeInScheduler / (float) runTimeStats.totalRunTime;
+		uint32_t overhead = 100 * runTimeStats.timeInScheduler / runTimeStats.totalRunTime;
 		// floats aren't printing so report as integer percentages
 		printf("System overhead: %u microseconds in scheduler / %u microseconds overall = %u percent\n", runTimeStats.timeInScheduler, runTimeStats.totalRunTime, overhead);
-		printf("Processor utilization: %u percent\n", utilization);
+
+		printf("Processor utilization: %u microseconds in tasks / %u microseconds overall = %u percent\n", runTimeStats.timeExecutingTasks, runTimeStats.totalRunTime, utilization);
 	}
 }
 
@@ -789,7 +829,7 @@ int main() {
 	initBoard();
 
 	// Create tasks
-	xTaskCreate(ddSchedulerTask, "DD_SCHEDULER_TASK", configMINIMAL_STACK_SIZE, NULL, 2, NULL);
+	xTaskCreate(ddSchedulerTask, "DD_SCHEDULER_TASK", configMINIMAL_STACK_SIZE, NULL, 4, NULL);
 	xTaskCreate(ddTask1GeneratorTask, "TASK1_GEN_TASK", configMINIMAL_STACK_SIZE, NULL, 3, NULL);
 	xTaskCreate(ddTask2GeneratorTask, "TASK2_GEN_TASK", configMINIMAL_STACK_SIZE, NULL, 3, NULL);
 	xTaskCreate(ddTask3GeneratorTask, "TASK3_GEN_TASK", configMINIMAL_STACK_SIZE, NULL, 3, NULL);
