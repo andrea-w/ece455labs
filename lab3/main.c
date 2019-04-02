@@ -69,6 +69,7 @@
 #include "../FreeRTOS_Source/include/task.h"
 #include "../FreeRTOS_Source/include/timers.h"
 #include "../FreeRTOS_Source/portable/MemMang/heap_4.c"
+#include "../FreeRTOS_Source/include/event_groups.h"
 
 /*----------------------------- DEFINITIONS ------------------------------*/
 #define TASK_QUEUE_LENGTH				8
@@ -94,6 +95,8 @@
 #define ACTIVE_REQUEST					3
 #define OVERDUE_REQUEST					4
 
+#define clockFreqGHz					SystemCoreClock / 1000000
+
 typedef struct TaskListItem {
 	TaskHandle_t tHandle;
 	TickType_t deadline;
@@ -109,14 +112,16 @@ typedef struct TaskParams {
 	const char* taskName;
 } TaskParams;
 
-typedef struct SchedulerMessage{
+typedef struct SchedulerMessage {
 	xQueueHandle responseQueueHandle;
 	TaskListItem taskListItem;
 } SchedulerMessage;
 
 typedef struct RunTimeStats {
-	
-}
+	uint32_t timeExecutingTasks;
+	uint32_t timeInScheduler;
+	uint32_t totalRunTime;
+} RunTimeStats;
 
 /*------------------------------ GLOBAL VARIABLES -----------------------------*/
 
@@ -129,11 +134,6 @@ static xQueueHandle xSchedulerMessageQueue = NULL;
 static xSemaphoreHandle xEventSemaphore = NULL;
 
 /*
- * MonitorTask uses this
- */
-uint32_t runningTime;
-
-/*
  * Processor utilization rate as calculated by MonitorTask
  */
 float utilization = 0.0;
@@ -141,10 +141,11 @@ float utilization = 0.0;
 /* Aperiodic task generator task handle so interrupt task can call it */
 TaskHandle_t aperiodicGeneratorHandle;
 
-/* Variables used by monitor task to store runtime statistics, and printed by aperiodic task */
-UBaseType_t uxArraySize;
-TaskStatus_t * pxTaskStatusArray;
-uint32_t ulTotalRunTime;
+/* Task run time storage, used by monitor task to calculate utilization and overhead */
+struct RunTimeStats runTimeStats;
+
+/* Event group (flag) to signal that a task has been run */
+EventGroupHandle_t xTaskExecutedFlag;
 
 /*----------------------------- INITIALIZATION FUNCTIONS ------------------------------*/
 
@@ -164,6 +165,26 @@ static void initBoard() {
 
 	// Fix priority of ISR
 	NVIC_SetPriority(USER_BUTTON_EXTI_IRQn, 5);
+
+	// Initialize the timer
+	RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM2, ENABLE);
+
+	TIM_TimeBaseInitTypeDef timerInitStructure;
+	// set timer such that it only counts per microsecond
+	timerInitStructure.TIM_Prescaler = clockFreqGHz;
+	timerInitStructure.TIM_CounterMode = TIM_CounterMode_Up;
+	timerInitStructure.TIM_Period = 0xFFFFFFFF;
+	timerInitStructure.TIM_ClockDivision = TIM_CKD_DIV1;
+	timerInitStructure.TIM_RepetitionCounter = 0;
+	TIM_TimeBaseInit(TIM2, &timerInitStructure);
+	TIM_Cmd(TIM2, ENABLE);
+
+	// create the flag for task execution
+	xTaskExecutedFlag = xEventGroupCreate();
+	// sanity check that flag was created ok
+	if (xTaskExecutedFlag == NULL) {
+		printf("Failed to create TaskExecutedFlag");
+	}
 }
 
 /* Creates queues used for inter-task communication:
@@ -239,7 +260,7 @@ static void ddTCreate(struct TaskParams* taskParams) {
  * Requests that the scheduler deletes the task with the specified handle
  * from the list of active tasks.
  */
-static void ddTDelete(TaskHandle_t taskToDelete) {
+static void ddTDelete(TaskHandle_t taskToDelete, const char* taskName) {
 	// open a SchedulerResponseQueue to scheduler task
 	xQueueHandle xSchedulerResponseQueue = xQueueCreate(1, sizeof(struct TaskListItem));
 	// add the queue to the registry
@@ -251,7 +272,8 @@ static void ddTDelete(TaskHandle_t taskToDelete) {
 	newTask.nextCell = NULL;
 	newTask.previousCell = NULL;
 	newTask.tHandle = taskToDelete;
-
+	// Signal to scheduler if aperiodic is that deadline = 0
+	newTask.deadline = strcmp(taskName, "ap_task");
 
 	// create SchedulerMessage
 	struct SchedulerMessage deleteMessage = {xSchedulerResponseQueue, newTask};
@@ -449,11 +471,32 @@ static void ddSchedulerTask(void *pvParameters) {
 	struct TaskListItem* aperiodicTasks = NULL;
 	struct SchedulerMessage receivedMessage;
 	int aperiodicTaskCounter = 0;
+	uint32_t schedulerStart = 0;
+	uint32_t taskStart = 0;
+	EventBits_t uxBits;
 
 	//loop
 	for(;;) {
 		// block on xSchedulerMessageQueue
 		xQueueReceive(xSchedulerMessageQueue, &receivedMessage, portMAX_DELAY);
+
+		// record starting time of scheduler
+		schedulerStart = TIM2->CNT;
+
+		// record total exec time up to this point (in microseconds)
+		runTimeStats.totalRunTime = 1000 * xTaskGetTickCount() / portTICK_PERIOD_MS;
+		printf("total run time: %u\n", runTimeStats.totalRunTime);
+
+		// record time in task (if task flag has been set)
+		uxBits = xEventGroupGetBits(xTaskExecutedFlag);
+		if (uxBits == 1) {
+			runTimeStats.timeExecutingTasks += ( TIM2->CNT  - taskStart ) * clockFreqGHz;
+			// clear the flag
+			xEventGroupClearBits(xTaskExecutedFlag, 1);
+		}
+
+		// clear timer
+		TIM2->CNT = ((uint32_t)0x0);
 
 		// parse type of message
 		struct TaskListItem taskListItem = receivedMessage.taskListItem;
@@ -485,6 +528,7 @@ static void ddSchedulerTask(void *pvParameters) {
 				break;
 			case ACTIVE_REQUEST:
 				// TODO make copy?
+				// TODO call this at some point...
 				// Send a copy of the active tasks list to the caller
 				xQueueSend(receivedMessage.responseQueueHandle, &activeTasks, 0);
 				break;
@@ -504,18 +548,33 @@ static void ddSchedulerTask(void *pvParameters) {
 		TickType_t currentTimeTicks = xTaskGetTickCount();
 		while(activeTasks != NULL && activeTasks->deadline < currentTimeTicks) {
 			printf("overdue task detected\n");
-			//remove task from active list and add to overdue list
+			// add task to overdue list
 			overdueTasks = addTaskToEndOfList(overdueTasks, activeTasks);
+
+			// delete task
+			ddTDelete(activeTasks->tHandle, "");
+
+			// remove task from active tasks list
 			activeTasks = activeTasks->nextCell;
 			activeTasks->previousCell = NULL;
 		}
 
+		// Record the time spent in the scheduler
+		// record starting time of scheduler
+		uint32_t schedulerEnd = TIM2->CNT;
+		printf("scheduler end: %u\n", schedulerEnd);
+		runTimeStats.timeInScheduler += (schedulerEnd - schedulerStart) * clockFreqGHz;
+
 		// Run periodic task at the front of the list, if list isn't empty
 		if(activeTasks != NULL) {
+			uxBits = xEventGroupSetBits(xTaskExecutedFlag, 1);
+			taskStart = TIM2->CNT;
 			xTaskNotifyGive(activeTasks->tHandle);
 		} else {
 			// If there are no periodic tasks to run, try an aperiodic task
 			if(aperiodicTasks != NULL) {
+				uxBits = xEventGroupSetBits(xTaskExecutedFlag, 1);
+				taskStart = TIM2->CNT;
 				xTaskNotifyGive(aperiodicTasks->tHandle);
 			}
 		}
@@ -540,7 +599,9 @@ static void userTask1(void *pvParameters) {
 	// Request scheduler to delete this task from active task list
 	const char* taskName = "Task_1";
 	TaskHandle_t tHandle = xTaskGetHandle(taskName);
-	ddTDelete(tHandle);
+	ddTDelete(tHandle, taskName);
+
+	// Delete task
 	vTaskDelete(NULL);
 }
 
@@ -559,8 +620,11 @@ static void userTask2(void *pvParameters) {
 	while(xTaskGetTickCount() < targetTimeTicks) { };
 
 	// Request scheduler to delete this task from active task list
-	TaskHandle_t tHandle = xTaskGetHandle("Task_2");
-	ddTDelete(tHandle);
+	const char* taskName = "Task_2";
+	TaskHandle_t tHandle = xTaskGetHandle(taskName);
+	ddTDelete(tHandle, taskName);
+
+	// Delete task
 	vTaskDelete(NULL);
 }
 
@@ -579,30 +643,12 @@ static void userTask3(void *pvParameters) {
 	while(xTaskGetTickCount() < targetTimeTicks) { };
 
 	// Request scheduler to delete this task from active task list
-	TaskHandle_t tHandle = xTaskGetHandle("Task_3");
-	ddTDelete(tHandle);
+	const char* taskName = "Task_3";
+	TaskHandle_t tHandle = xTaskGetHandle(taskName);
+	ddTDelete(tHandle, taskName);
+
+	// Delete task
 	vTaskDelete(NULL);
-}
-
-static void printStats() {
-	unsigned long ulMonitorRunTime = 0;
-	TaskStatus_t * taskStatus = pxTaskStatusArray;
-
-	UBaseType_t i = 0;
-	printf("MONITOR TASK REPORT\n\nNAME\t\tRUNTIME\n");
-	for(i = 0; i < uxArraySize; i++) {
-		printf("%s\t\t%lu\n", taskStatus->pcTaskName, taskStatus->ulRunTimeCounter);
-		if (strcmp("MONITOR_TASK", taskStatus->pcTaskName) == 0) {
-			// TODO remove
-			printf("found monitor task\n");
-			ulMonitorRunTime = taskStatus->ulRunTimeCounter;
-
-		}
-		taskStatus += sizeof(TaskStatus_t);
-	}
-
-	unsigned long utilization = (unsigned long) (ulTotalRunTime - ulMonitorRunTime) / ulTotalRunTime;
-	printf("\nTOTAL RUNTIME:\t%u\nUTILIZATION:\t%ul\n", ulTotalRunTime, utilization);
 }
 
 /* The aperiodic task triggered by user button on board */
@@ -623,15 +669,18 @@ static void aperiodicTask(void *pvParameters) {
 
 	int i = 0;
 	for (i = 0; i < 1000; i++) { }
-	//TODO do something with this
-	// struct TaskListItem* activeTasks = ddReturnActiveList();
-	// struct TaskListItem* overdueTasks = ddReturnOverdueList();
+	 struct TaskListItem* activeTasks = ddReturnActiveList();
+	 struct TaskListItem* overdueTasks = ddReturnOverdueList();
+	 // TODO - print something better than this
+	 printf("Active tasks %u\n", activeTasks->taskType);
+	 printf("Overdue tasks %u\n", overdueTasks->taskType);
 
 	printf("aperiodic task completed.\n");
 
 	// Request scheduler to delete this task from active task list
-	TaskHandle_t tHandle = xTaskGetHandle("ap_task");
-	ddTDelete(tHandle);
+	const char* taskName = "ap_task";
+	TaskHandle_t tHandle = xTaskGetHandle(taskName);
+	ddTDelete(tHandle, taskName);
 	vTaskDelete(NULL);
 }
 
@@ -700,22 +749,22 @@ static void ddTask3GeneratorTask(void *pvParameters) {
 }
 
 static void monitorTask(void *pvParameters) {
-	/* TODO this task calculates processor utilization and system overhead */
-	printf("monitor task\n");
+	/* this task calculates processor utilization and system overhead */
+	printf("monitor task start\n");
 	portTickType xNextWakeTime = xTaskGetTickCount();
 	for(;;) {
-		// TODO - delay for interval, allow idle task to work
-		vTaskDelayUntil(&xNextWakeTime, 100);
+		// TODO - figure out interval here delay for interval, allow idle task to work
+		vTaskDelayUntil(&xNextWakeTime, 1000);
+		// TODO - delete
+		printf("monitor task\n");
+		// calculate processor utilization
+		utilization = (float) runTimeStats.timeExecutingTasks / runTimeStats.totalRunTime;
+		// calculate system overhead
+		float overhead = runTimeStats.timeInScheduler / (float) runTimeStats.totalRunTime;
+		// TODO - floats aren't printing ???
+		printf("System overhead: %u microseconds in scheduler / %u microseconds overall = %6.3f\n", runTimeStats.timeInScheduler, runTimeStats.totalRunTime, overhead);
+		printf("Processor utilization: %6.3f\n", utilization);
 	}
-//	printf("num tasks = %u\nallocating status array now\n", uxArraySize);
-//	pxTaskStatusArray = pvPortMalloc(uxArraySize * sizeof(TaskStatus_t));
-//	BaseType_t test = uxArraySize;
-//
-//	printf("entering infinite loop\n");
-//	for(;;) {
-//		uxArraySize = uxTaskGetNumberOfTasks();
-//		uxTaskGetSystemState(pxTaskStatusArray, uxArraySize, &ulTotalRunTime);
-//	}
 }
 
 /* Interrupt handler */
@@ -738,9 +787,6 @@ int main() {
 	createQueues();
 	// Setup lights, user input on board
 	initBoard();
-
-	// init total running time counter
-	runningTime = 0;
 
 	// Create tasks
 	xTaskCreate(ddSchedulerTask, "DD_SCHEDULER_TASK", configMINIMAL_STACK_SIZE, NULL, 2, NULL);
