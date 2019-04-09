@@ -1,56 +1,6 @@
-/*
-    FreeRTOS V9.0.0 - Copyright (C) 2016 Real Time Engineers Ltd.
-    All rights reserved
-    VISIT http://www.FreeRTOS.org TO ENSURE YOU ARE USING THE LATEST VERSION.
-    This file is part of the FreeRTOS distribution.
-    FreeRTOS is free software; you can redistribute it and/or modify it under
-    the terms of the GNU General Public License (version 2) as published by the
-    Free Software Foundation >>>> AND MODIFIED BY <<<< the FreeRTOS exception.
-    ***************************************************************************
-    >>!   NOTE: The modification to the GPL is included to allow you to     !<<
-    >>!   distribute a combined work that includes FreeRTOS without being   !<<
-    >>!   obliged to provide the source code for proprietary components     !<<
-    >>!   outside of the FreeRTOS kernel.                                   !<<
-    ***************************************************************************
-    FreeRTOS is distributed in the hope that it will be useful, but WITHOUT ANY
-    WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
-    FOR A PARTICULAR PURPOSE.  Full license text is available on the following
-    link: http://www.freertos.org/a00114.html
-    ***************************************************************************
-     *                                                                       *
-     *    FreeRTOS provides completely free yet professionally developed,    *
-     *    robust, strictly quality controlled, supported, and cross          *
-     *    platform software that is more than just the market leader, it     *
-     *    is the industry's de facto standard.                               *
-     *                                                                       *
-     *    Help yourself get started quickly while simultaneously helping     *
-     *    to support the FreeRTOS project by purchasing a FreeRTOS           *
-     *    tutorial book, reference manual, or both:                          *
-     *    http://www.FreeRTOS.org/Documentation                              *
-     *                                                                       *
-    ***************************************************************************
-    http://www.FreeRTOS.org/FAQHelp.html - Having a problem?  Start by reading
-    the FAQ page "My application does not run, what could be wrong?".  Have you
-    defined configASSERT()?
-    http://www.FreeRTOS.org/support - In return for receiving this top quality
-    embedded software for free we request you assist our global community by
-    participating in the support forum.
-    http://www.FreeRTOS.org/training - Investing in training allows your team to
-    be as productive as possible as early as possible.  Now you can receive
-    FreeRTOS training directly from Richard Barry, CEO of Real Time Engineers
-    Ltd, and the world's leading authority on the world's leading RTOS.
-    http://www.FreeRTOS.org/plus - A selection of FreeRTOS ecosystem products,
-    including FreeRTOS+Trace - an indispensable productivity tool, a DOS
-    compatible FAT file system, and our tiny thread aware UDP/IP stack.
-    http://www.FreeRTOS.org/labs - Where new FreeRTOS products go to incubate.
-    Come and try FreeRTOS+TCP, our new open source TCP/IP stack for FreeRTOS.
-    http://www.OpenRTOS.com - Real Time Engineers ltd. license FreeRTOS to High
-    Integrity Systems ltd. to sell under the OpenRTOS brand.  Low cost OpenRTOS
-    licenses offer ticketed support, indemnification and commercial middleware.
-    http://www.SafeRTOS.com - High Integrity Systems also provide a safety
-    engineered and independently SIL3 certified version for use in safety and
-    mission critical applications that require provable dependability.
-    1 tab == 4 spaces!
+/* ECE 455 Lab 3 main.c file
+*  Authored by Meagan Russell and Andrea Williams
+*  Spring 2019
 */
 
 /* Standard includes. */
@@ -155,8 +105,8 @@ static void initBoard() {
 	// Initialize user push button
 	STM_EVAL_PBInit(BUTTON_USER, BUTTON_MODE_EXTI);
 
-	/* Set priority bits */
-	NVIC_PriorityGroupConfig( NVIC_PriorityGroup_4 );
+	// Set priority bits for interrupt
+	NVIC_PriorityGroupConfig(NVIC_PriorityGroup_4);
 
 	// Fix priority of ISR
 	NVIC_SetPriority(USER_BUTTON_EXTI_IRQn, 5);
@@ -182,22 +132,14 @@ static void initBoard() {
 	}
 }
 
-/* Creates queues used for inter-task communication:
- *	 1) CreateTaskQueue
- *   2) DeleteTaskQueue
- */
+/* Creates CreateTaskQueue used for inter-task communication: sender is ddTCreate, receiver is ddSchedulerTask */
 static void createQueues() {
-	/* CreateTaskQueue: sender is dd_tcreate, receiver is DDSchedulerTask */
-	xSchedulerMessageQueue = xQueueCreate(TASK_QUEUE_LENGTH, /* The number of items the queue can hold. */
-		sizeof(struct SchedulerMessage));	/* The size of each item the queue holds. */
+	xSchedulerMessageQueue = xQueueCreate(TASK_QUEUE_LENGTH, sizeof(struct SchedulerMessage));
 
 	/* Add to the registry, for the benefit of kernel aware debugging. */
 	vQueueAddToRegistry(xSchedulerMessageQueue, "SchedulerMessageQueue");
 }
-/*------------------- FUNCTIONS --------------------------------*/
-
-
-// TODO comments
+/*----------------------------- FUNCTIONS --------------------------------*/
 
 /* Turn off all board LEDs */
 void turnOffLEDs() {
@@ -207,6 +149,7 @@ void turnOffLEDs() {
 	STM_EVAL_LEDOff(3);
 }
 
+/* Utility function that prints handle and deadline of each task in the provided active tasks list */
 void printActiveTasks(struct TaskListItem* activeTasks) {
 	if (activeTasks == NULL) {
 		printf("No active tasks.\n");
@@ -221,6 +164,7 @@ void printActiveTasks(struct TaskListItem* activeTasks) {
 	}
 }
 
+/* Utility function that prints handle and deadline of each task in the provided overdue tasks list */
 void printOverdueTasks(struct TaskListItem* overdueTasks) {
 	if (overdueTasks == NULL) {
 		printf("No overdue tasks.\n");
@@ -247,11 +191,11 @@ void ddTCreate(struct TaskParams* taskParams) {
 	struct TaskListItem newTask;
 	newTask.creationTime = xTaskGetTickCount();
 	newTask.taskType = CREATION_MESSAGE;
-	// if the task is aperiodic, it has no deadline
+
+	// if the task is aperiodic, it has relative deadline of 0
 	if (taskParams->relativeDeadline == 0) {
 		newTask.deadline = 0;
-	}
-	else {
+	} else {
 		newTask.deadline = newTask.creationTime + taskParams->relativeDeadline;
 		if (newTask.deadline < newTask.creationTime) {
 			printf("Deadline less than creation time in createTask - possible int overflow on new tasklistitem\n");
@@ -262,25 +206,19 @@ void ddTCreate(struct TaskParams* taskParams) {
 	newTask.previousCell = NULL;
 	newTask.tHandle = thandle;
 
-	// create the task
 	xTaskCreate(taskParams->taskCode, taskParams->taskName, configMINIMAL_STACK_SIZE, NULL, 2, &newTask.tHandle);
 
-	// open a SchedulerResponseQueue to scheduler task
+	// open a SchedulerResponseQueue to scheduler task and add to registry
 	xQueueHandle xSchedulerResponseQueue = xQueueCreate(1, sizeof(struct TaskListItem));
-	// add the queue to the registry
 	vQueueAddToRegistry(xSchedulerResponseQueue, "SchedulerCreateResponseQueue");
 
-	// create CreateTaskMessage
 	struct SchedulerMessage createMessage = {xSchedulerResponseQueue, newTask};
-
-	// put task on Queue (w createMessage)
 	xQueueSend(xSchedulerMessageQueue, &createMessage, 0);
 
-	// wait for response from scheduler task
+	// wait for response from scheduler task, then destroy response queue
 	struct TaskListItem response;
 	xQueueReceive(xSchedulerResponseQueue, &response, portMAX_DELAY);
 
-	// destroy SchedulerResponseQueue
 	vQueueUnregisterQueue(xSchedulerResponseQueue);
 	vQueueDelete(xSchedulerResponseQueue);
 	return;
@@ -293,7 +231,6 @@ void ddTCreate(struct TaskParams* taskParams) {
 void ddTDelete(TaskHandle_t taskToDelete, const char* taskName) {
 	// open a SchedulerResponseQueue to scheduler task
 	xQueueHandle xSchedulerResponseQueue = xQueueCreate(1, sizeof(struct TaskListItem));
-	// add the queue to the registry
 	vQueueAddToRegistry(xSchedulerResponseQueue, "SchedulerDeleteResponseQueue");
 
 	// initialize new TaskListItem
@@ -302,20 +239,19 @@ void ddTDelete(TaskHandle_t taskToDelete, const char* taskName) {
 	newTask.nextCell = NULL;
 	newTask.previousCell = NULL;
 	newTask.tHandle = taskToDelete;
-	// Signal to scheduler if aperiodic is that deadline = 0
+
+	// If aperiodic, set deadline = 0 to signal to scheduler
 	newTask.deadline = strcmp(taskName, "ap_task");
 
-	// create SchedulerMessage
 	struct SchedulerMessage deleteMessage = {xSchedulerResponseQueue, newTask};
-	// put task on DeleteTaskQueue (w task handle) which is read by scheduler
 	xQueueSend(xSchedulerMessageQueue, &deleteMessage, 0);
-	// wait for response from scheduler
+
+	// wait for response from scheduler, then destroy response queue
 	struct TaskListItem response;
 	xQueueReceive(xSchedulerResponseQueue, &response, portMAX_DELAY);
-	// destroy SchedulerResponseQueue
+
 	vQueueUnregisterQueue(xSchedulerResponseQueue);
 	vQueueDelete(xSchedulerResponseQueue);
-
 	return;
 }
 
@@ -325,19 +261,21 @@ void ddTDelete(TaskHandle_t taskToDelete, const char* taskName) {
 struct TaskListItem* ddReturnActiveList() {
 	struct TaskListItem* activeTasks;
 	static xQueueHandle xSchedulerResponseQueue = NULL;
+
 	// open a SchedulerResponseQueue to scheduler task
 	xSchedulerResponseQueue = xQueueCreate(1, sizeof(TaskListItem*));
-	// add the queue to the registry
 	vQueueAddToRegistry(xSchedulerResponseQueue, "SchedulerResponseQueue");
-	// initialize TaskListItem
+
 	struct TaskListItem activeItem = {.taskType = ACTIVE_REQUEST};
-	// create SchedulerMessage
 	struct SchedulerMessage activeMessage = {xSchedulerResponseQueue, activeItem};
-	// Ask scheduler for list of active tasks (will have been copied from scheduler internal list at time of request)
+
+	// Ask scheduler for list of active tasks
 	xQueueSend(xSchedulerMessageQueue, &activeMessage, 0);
+
 	// wait for response from scheduler
 	xQueueReceive(xSchedulerResponseQueue, &activeTasks, 0);
-	// destroy SchedulerResponseQueue
+
+	// destroy response queue
 	vQueueUnregisterQueue(xSchedulerResponseQueue);
 	vQueueDelete(xSchedulerResponseQueue);
 	return activeTasks;
@@ -349,20 +287,22 @@ struct TaskListItem* ddReturnActiveList() {
 struct TaskListItem* ddReturnOverdueList() {
 	struct TaskListItem* overdueTasks;
 	static xQueueHandle xSchedulerResponseQueue = NULL;
+
 	// open a SchedulerResponseQueue to scheduler task
 	xSchedulerResponseQueue = xQueueCreate(1, sizeof(TaskListItem*));
-	// add the queue to the registry
 	vQueueAddToRegistry(xSchedulerResponseQueue, "SchedulerResponseQueue");
-	// initialize TaskListItem
+
 	struct TaskListItem overdueItem = {.taskType = OVERDUE_REQUEST};
-	// create SchedulerMessage
 	struct SchedulerMessage overdueMessage = {xSchedulerResponseQueue, overdueItem};
+
 	// Ask scheduler for list of overdue tasks
 	xQueueSend(xSchedulerMessageQueue, &overdueMessage, 0);
+
 	// wait for response from scheduler
 	xQueueReceive(xSchedulerResponseQueue, &overdueTasks, 0);
-	// destroy SchedulerResponseQueue
 	vQueueUnregisterQueue(xSchedulerResponseQueue);
+
+	// destroy response queue
 	vQueueDelete(xSchedulerResponseQueue);
 	return overdueTasks;
 }
@@ -378,7 +318,7 @@ struct TaskListItem* getBeginningOfList(struct TaskListItem* currentTask) {
 }
 
 /*
- * Adds the task list item to the end of the list; returns a pointer to the beginning of the modified list
+ * Adds the task list item to the end of the list; returns a pointer to the beginning of the modified list.
  */
 struct TaskListItem* addTaskToEndOfList(struct TaskListItem* beginningOfList, struct TaskListItem* taskToAdd) {
 	struct TaskListItem* currentTask = beginningOfList;
@@ -387,7 +327,7 @@ struct TaskListItem* addTaskToEndOfList(struct TaskListItem* beginningOfList, st
 	if(currentTask == NULL) {
 		currentTask = pvPortMalloc(sizeof(struct TaskListItem));
 		if(currentTask == NULL) {
-			printf("Houston we have a problem\n");
+			printf("Failed to allocate memory for list item!\n");
 			return NULL;
 		}
 		currentTask->creationTime = taskToAdd->creationTime;
@@ -403,6 +343,10 @@ struct TaskListItem* addTaskToEndOfList(struct TaskListItem* beginningOfList, st
 
 		// create the new item at the end of the list
 		currentTask->nextCell = pvPortMalloc(sizeof(struct TaskListItem));
+		if(currentTask->nextCell == NULL) {
+			printf("Failed to allocate memory for list item!\n");
+			return NULL;
+		}
 		currentTask->nextCell->creationTime = taskToAdd->creationTime;
 		currentTask->nextCell->deadline = taskToAdd->deadline;
 		currentTask->nextCell->tHandle = taskToAdd->tHandle;
@@ -414,17 +358,20 @@ struct TaskListItem* addTaskToEndOfList(struct TaskListItem* beginningOfList, st
 }
 
 /*
- * Deletes the specified task from the list of active tasks by iterating
- * through the list of active tasks and comparing task handles
+ * Deletes the specified task from the list of active tasks.
+ * Should be passed the pointer to the beginning of the list.
  */
 struct TaskListItem* deleteTaskByHandle(struct TaskListItem* activeTasks, TaskHandle_t taskHandle) {
 	struct TaskListItem* currentTask = activeTasks;
 	struct TaskListItem* beginningOfList = NULL;
 
+	// Find the task in the list by handle
 	while (currentTask != NULL) {
 		if (currentTask->tHandle == taskHandle) {
 			TaskListItem* prev = currentTask->previousCell;
 			TaskListItem* next = currentTask->nextCell;
+
+			// Make sure next item's previousCell pointer is no longer pointing to item to delete
 			if (next != NULL) {
 				next->previousCell = prev;
 				beginningOfList = getBeginningOfList(next);
@@ -451,7 +398,9 @@ struct TaskListItem* deleteTaskByHandle(struct TaskListItem* activeTasks, TaskHa
 	return getBeginningOfList(currentTask);
 }
 
-/* Sorts the linked list of tasks, earliest deadline first. Returns a pointer to the beginning of the list */
+/* Sorts the linked list of tasks, earliest deadline first.
+*  Should be passed a pointer to the head of the active tasks list.
+*  Returns a pointer to the beginning of the list. */
 struct TaskListItem* sortTasksEDF(struct TaskListItem* activeTasks) {
 	// Task list will always be very short for this application so efficiency doesn't much matter, using bubble sort
 	int swapFlag = 0;
@@ -471,7 +420,6 @@ struct TaskListItem* sortTasksEDF(struct TaskListItem* activeTasks) {
 				TaskListItem* previous = currentTask->previousCell;
 				TaskListItem* next = currentTask->nextCell;
 
-				// Previous task points to next task
 				if(previous != NULL) {
 					previous->nextCell = next;
 				}
@@ -496,6 +444,20 @@ struct TaskListItem* sortTasksEDF(struct TaskListItem* activeTasks) {
 
 /*-------------------------------------- TASKS ----------------------------------*/
 
+/* This task is responsible for scheduling the user tasks.
+*  The scheduler uses an EDF scheduling algorithm to maintain a list of active
+*  periodic tasks and their priorities. It also maintains a list of overdue tasks,
+*  and a list of aperiodic tasks.
+*
+*  The scheduler is normally suspended (it blocks on its input queue for scheduling
+*  request messages to arrive). On receipt of a request, it fulfils the request by
+*  adding a task to the active tasks list, deleting the task from the list, or
+*  returning the list of active or overdue tasks. It then sorts the list of active
+*  tasks in increasing deadline order. It checks for any overdue tasks, adds these
+*  to the overdue tasks list, and deletes them from the active tasks list. It then
+*  runs the active task at the front of the list. If no periodic tasks are ready,
+*  the scheduler will run an aperiodic task if one is ready.
+*/
 static void ddSchedulerTask(void *pvParameters) {
 	struct TaskListItem* activeTasks = NULL;
 	struct TaskListItem* overdueTasks = NULL;
@@ -508,7 +470,7 @@ static void ddSchedulerTask(void *pvParameters) {
 	// clear timer before we start
 	TIM2->CNT = ((uint32_t)0x0);
 
-	//loop
+	// infinite loop
 	for(;;) {
 		// block on xSchedulerMessageQueue
 		xQueueReceive(xSchedulerMessageQueue, &receivedMessage, portMAX_DELAY);
@@ -532,20 +494,24 @@ static void ddSchedulerTask(void *pvParameters) {
 		struct TaskListItem responseMessage = {};
 		switch(taskListItem.taskType) {
 			case CREATION_MESSAGE:
-				// Add task to active task list, then respond to caller
 				if(taskListItem.deadline != 0) {
+					// This is a periodic task; add it to the active tasks list
 					activeTasks = addTaskToEndOfList(activeTasks, &taskListItem);
 				} else {
-					// This is an aperiodic task. Check how many we have, reject if too many
+					// This is an aperiodic task. Check how many we have, reject if too many -
+					// this is to prevent memory from being eaten up by unresolved aperiodic tasks
 					if (aperiodicTaskCounter > 2) {
 						printf("Too many aperiodic tasks! Not scheduled.\n");
 					} else {
+						// Add it to the aperiodic tasks list
 						aperiodicTaskCounter++;
 						aperiodicTasks = addTaskToEndOfList(aperiodicTasks, &taskListItem);
 					}
 				}
+				// Respond to caller
 				xQueueSend(receivedMessage.responseQueueHandle, &responseMessage, 0);
 				break;
+
 			case DELETION_MESSAGE:
 				// Delete task from appropriate task list, then respond to caller
 				if(taskListItem.deadline != 0) {
@@ -556,31 +522,31 @@ static void ddSchedulerTask(void *pvParameters) {
 				}
 				xQueueSend(receivedMessage.responseQueueHandle, &responseMessage, 0);
 				break;
+
 			case ACTIVE_REQUEST:
-				// Send a copy of the active tasks list to the caller
+				// Send the current active tasks list to the caller
 				xQueueSend(receivedMessage.responseQueueHandle, &activeTasks, 0);
 				break;
+
 			case OVERDUE_REQUEST:
-				// Send a copy of the overdue tasks list to the caller
+				// Send the current overdue tasks list to the caller
 				xQueueSend(receivedMessage.responseQueueHandle, &overdueTasks, 0);
 				break;
+
 			default:
-				printf("in default\n");
+				printf("In default case. This should not happen!\n");
 				break;
 		}
 
 		// Sort task list by deadline
 		activeTasks = sortTasksEDF(activeTasks);
 
-		// Check for overdue tasks
+		// Check for overdue tasks - add these to overdue tasks list and remove from active tasks list, then delete
 		TickType_t currentTimeTicks = xTaskGetTickCount();
 		while(activeTasks != NULL && activeTasks->deadline < currentTimeTicks) {
 			TaskListItem newOverdue = *activeTasks;
-			// add task to overdue list
 			overdueTasks = addTaskToEndOfList(overdueTasks, &newOverdue);
-			// remove task from active tasks list
 			activeTasks = deleteTaskByHandle(activeTasks, newOverdue.tHandle);
-			// Delete task
 			vTaskDelete(newOverdue.tHandle);
 		}
 
@@ -601,10 +567,10 @@ static void ddSchedulerTask(void *pvParameters) {
 			}
 		}
 	}
-
-	printf("this shouldn't happen\n");
 }
 
+/* This is one of the three user tasks that is generated from a generator task.
+*  It has a period and execution time defined at the top of the file. */
 static void userTask1(void *pvParameters) {
 	// Block indefinitely until notified by scheduler
 	ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
@@ -617,7 +583,6 @@ static void userTask1(void *pvParameters) {
 	// busywork for defined execution time
 	TickType_t xDelayTicks = TASK1_EXECUTION_MS / portTICK_PERIOD_MS;
 	TickType_t targetTimeTicks = xTaskGetTickCount() + xDelayTicks;
-
 	while(xTaskGetTickCount() < targetTimeTicks) { };
 
 	// Turn off amber LED
@@ -632,6 +597,8 @@ static void userTask1(void *pvParameters) {
 	vTaskDelete(NULL);
 }
 
+/* This is one of the three user tasks that is generated from a generator task.
+*  It has a period and execution time defined at the top of the file. */
 static void userTask2(void *pvParameters) {
 	// Block indefinitely until notified by scheduler
 	ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
@@ -658,6 +625,8 @@ static void userTask2(void *pvParameters) {
 	vTaskDelete(NULL);
 }
 
+/* This is one of the three user tasks that is generated from a generator task.
+*  It has a period and execution time defined at the top of the file. */
 static void userTask3(void *pvParameters) {
 	// Block indefinitely until notified by scheduler
 	ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
@@ -684,7 +653,12 @@ static void userTask3(void *pvParameters) {
 	vTaskDelete(NULL);
 }
 
-/* The aperiodic task triggered by user button on board */
+/* The aperiodic task is generated from the aperiodic task generator task.
+*  It has an arbitrary execution time with no hard deadline. The aperiodic
+*  task also fetches and prints the active and overdue task lists from the
+*  scheduler. Since this task will be pre-empted by any periodic task, the
+*  lists printed are representative of the list at some point in the
+*  program's execution and not necessarily at the time of calling. */
 static void aperiodicTask(void *pvParameters) {
 	// Block indefinitely until notified by scheduler
 	ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
@@ -694,12 +668,10 @@ static void aperiodicTask(void *pvParameters) {
 	// Turn on red LED
 	STM_EVAL_LEDOn(2);
 
-	// busywork for some execution time
+	// busywork for execution time
 	TickType_t xDelayTicks = 250 / portTICK_PERIOD_MS;
 	TickType_t targetTimeTicks = xTaskGetTickCount() + xDelayTicks;
-
 	while(xTaskGetTickCount() < targetTimeTicks) { };
-
 
 	struct TaskListItem* activeTasks = ddReturnActiveList();
 	struct TaskListItem* overdueTasks = ddReturnOverdueList();
@@ -716,18 +688,17 @@ static void aperiodicTask(void *pvParameters) {
 	vTaskDelete(NULL);
 }
 
+/* This task generates the aperiodic task. It is triggered by an interrupt
+*  generated by the user button on the board. */
 static void ddAperiodicTaskGeneratorTask(void *pvParameters) {
-	// create TaskParams
 	struct TaskParams aperiodicTaskParams;
 	aperiodicTaskParams.taskName = "ap_task";
 	aperiodicTaskParams.taskCode = aperiodicTask;
 	aperiodicTaskParams.relativeDeadline = 0;
 
 	for(;;) {
-		// Block indefinitely until notified by scheduler
+		// Block indefinitely until notified by interrupt
 		ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-
-		// call ddTCreate function
 		ddTCreate(&aperiodicTaskParams);
 	}
 }
@@ -738,9 +709,9 @@ static void ddTask1GeneratorTask(void *pvParameters) {
 	portTickType xNextWakeTime = xTaskGetTickCount();
 
 	for(;;) {
-		// on interval: (vTaskDelayUntil...)
+		// delay for task period interval
 		vTaskDelayUntil(&xNextWakeTime, TASK1_QUEUE_SEND_PERIOD_MS);
-		// create TaskParams
+
 		struct TaskParams task1Params;
 		task1Params.taskName = "Task_1";
 		task1Params.taskCode = userTask1;
@@ -749,13 +720,14 @@ static void ddTask1GeneratorTask(void *pvParameters) {
 	}
 }
 
+/* Task generators generate user tasks at specified intervals */
 static void ddTask2GeneratorTask(void *pvParameters) {
 	portTickType xNextWakeTime = xTaskGetTickCount();
 
 	for(;;) {
-		// delay for interval
+		// delay for task period interval
 		vTaskDelayUntil(&xNextWakeTime, TASK2_QUEUE_SEND_PERIOD_MS);
-		// create TaskParams
+
 		struct TaskParams task2Params;
 		task2Params.taskName = "Task_2";
 		task2Params.taskCode = userTask2;
@@ -764,13 +736,14 @@ static void ddTask2GeneratorTask(void *pvParameters) {
 	}
 }
 
+/* Task generators generate user tasks at specified intervals */
 static void ddTask3GeneratorTask(void *pvParameters) {
 	portTickType xNextWakeTime = xTaskGetTickCount();
 
 	for(;;) {
-		// delay for interval
+		// delay for task period interval
 		vTaskDelayUntil(&xNextWakeTime, TASK3_QUEUE_SEND_PERIOD_MS);
-		// create TaskParams
+
 		struct TaskParams task3Params;
 		task3Params.taskName = "Task_3";
 		task3Params.taskCode = userTask3;
@@ -779,37 +752,36 @@ static void ddTask3GeneratorTask(void *pvParameters) {
 	}
 }
 
+/* The monitor task calculates and prints processor utilization and system overhead.
+*  This task has the lowest priority - it only runs when no other task is running. */
 static void monitorTask(void *pvParameters) {
-	/* this task prints processor utilization and system overhead */
 	portTickType xNextWakeTime = xTaskGetTickCount();
 	uint32_t utilization = 0;
 	for(;;) {
-		// delay for interval, allow idle task to work
+		// delay for interval, allow idle task to work to clean up memory
 		vTaskDelayUntil(&xNextWakeTime, 5000);
 
 		// calculate processor utilization
 		utilization = (uint32_t) (100 * runTimeStats.timeExecutingTasks) / runTimeStats.totalRunTime;
 
-		// floats aren't printing so report as integer percentages
+		// Report as integer percentages
 		printf("Scheduler overhead: %u microseconds\nProcessor utilization: %u microseconds in tasks / %u microseconds total = %u percent utilization\n",
 				runTimeStats.timeInScheduler, runTimeStats.timeExecutingTasks, runTimeStats.totalRunTime, utilization);
 	}
 }
 
-/* Interrupt handler */
-
-/* Awakens aperiodic task generator from button interrupt */
+/* Interrupt handler - awakens aperiodic task generator from button interrupt */
 void EXTI0_IRQHandler(void) {
 	// Ensure interrupt bit is set
 	if(EXTI_GetITStatus(EXTI_Line0) != RESET) {
 		// clear interrupt flag
 		EXTI_ClearITPendingBit(EXTI_Line0);
-		// Send notification to generator task
+		// Send notification to aperiodic generator task
 		vTaskNotifyGiveFromISR(aperiodicGeneratorHandle, NULL);
 	}
 }
 
-/* ------------------------------------------- MAIN ------------------------------------------------------ */
+/* ---------------------------------- MAIN -------------------------------------- */
 
 int main() {
 	// Initialize queues
@@ -832,7 +804,7 @@ int main() {
 }
 
 
-/*---------------------------- Functions included in demo file ------------------------------*/
+/*---------------------------- Hook functions included in demo file ------------------------------*/
 
 void vApplicationTickHook(void)
 {
